@@ -23,6 +23,9 @@ class SettingsResponse(BaseModel):
     embedding_provider: str
     embedding_model: str
     image_provider: str
+    image_api_key: str
+    image_base_url: str
+    image_model: str
     replicate_api_token: str
     fal_key: str
     telegram_bot_token_1: str
@@ -42,6 +45,9 @@ class SettingsUpdate(BaseModel):
     embedding_provider: str | None = None
     embedding_model: str | None = None
     image_provider: str | None = None
+    image_api_key: str | None = None
+    image_base_url: str | None = None
+    image_model: str | None = None
     replicate_api_token: str | None = None
     fal_key: str | None = None
     telegram_bot_token_1: str | None = None
@@ -62,6 +68,9 @@ async def get_settings(current_user: User = Depends(get_current_user)):
         embedding_provider=settings.embedding_provider,
         embedding_model=settings.embedding_model,
         image_provider=settings.image_provider,
+        image_api_key=settings.image_api_key,
+        image_base_url=settings.image_base_url,
+        image_model=settings.image_model,
         replicate_api_token=settings.replicate_api_token,
         fal_key=settings.fal_key,
         telegram_bot_token_1=os.getenv("TELEGRAM_BOT_TOKEN_1", ""),

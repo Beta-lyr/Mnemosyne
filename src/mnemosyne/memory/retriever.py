@@ -23,11 +23,15 @@ class MemoryRetriever:
         """
         results = []
 
-        async with async_session() as session:
-            # 1. Semantic search via pgvector
-            semantic = await self._semantic_search(session, character_id, query, top_k)
-            results.extend(semantic)
+        # 1. Semantic search via pgvector (isolated session to avoid poisoning main tx)
+        try:
+            async with async_session() as vs_session:
+                semantic = await self._semantic_search(vs_session, character_id, query, top_k)
+                results.extend(semantic)
+        except Exception:
+            pass
 
+        async with async_session() as session:
             # 2. Recent feelings
             feelings = await self._recent_feelings(session, character_id, days=3)
             results.extend(feelings)
@@ -57,54 +61,35 @@ class MemoryRetriever:
         self, session: AsyncSession, character_id: str, query: str, top_k: int
     ) -> list[dict]:
         """Vector similarity search using pgvector."""
-        try:
-            from mnemosyne.memory.models import get_embedding
-            embedding = await get_embedding(query)
-            embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+        from mnemosyne.memory.models import get_embedding
+        embedding = await get_embedding(query)
+        embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
 
-            result = await session.execute(
-                text("""
-                    SELECT id, type, content, metadata, importance,
-                           1 - (embedding <=> :embedding::vector) as similarity
-                    FROM memories
-                    WHERE character_id = :char_id
-                      AND embedding IS NOT NULL
-                    ORDER BY embedding <=> :embedding::vector
-                    LIMIT :top_k
-                """),
-                {"char_id": character_id, "embedding": embedding_str, "top_k": top_k},
-            )
-            rows = result.fetchall()
-            return [
-                {
-                    "id": str(row[0]),
-                    "type": row[1],
-                    "content": row[2],
-                    "metadata": row[3] or {},
-                    "importance": row[4],
-                    "similarity": row[5],
-                }
-                for row in rows
-                if row[5] > 0.5  # similarity threshold
-            ]
-        except Exception:
-            # Fallback: keyword search if pgvector/embedding fails
-            result = await session.execute(
-                select(Memory)
-                .where(Memory.character_id == character_id)
-                .order_by(Memory.created_at.desc())
-                .limit(top_k)
-            )
-            return [
-                {
-                    "id": str(m.id),
-                    "type": m.type,
-                    "content": m.content,
-                    "metadata": m.metadata_ or {},
-                    "importance": m.importance,
-                }
-                for m in result.scalars().all()
-            ]
+        result = await session.execute(
+            text("""
+                SELECT id, type, content, metadata, importance,
+                       1 - (embedding <=> CAST(:embedding AS vector)) as similarity
+                FROM memories
+                WHERE character_id = :char_id
+                  AND embedding IS NOT NULL
+                ORDER BY embedding <=> CAST(:embedding AS vector)
+                LIMIT :top_k
+            """),
+            {"char_id": character_id, "embedding": embedding_str, "top_k": top_k},
+        )
+        rows = result.fetchall()
+        return [
+            {
+                "id": str(row[0]),
+                "type": row[1],
+                "content": row[2],
+                "metadata": row[3] or {},
+                "importance": row[4],
+                "similarity": row[5],
+            }
+            for row in rows
+            if row[5] > 0.5  # similarity threshold
+        ]
 
     async def _recent_feelings(
         self, session: AsyncSession, character_id: str, days: int = 3

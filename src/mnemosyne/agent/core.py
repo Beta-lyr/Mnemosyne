@@ -1,6 +1,7 @@
 """LangGraph-based dialog orchestration engine."""
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -58,7 +59,7 @@ class DialogEngine:
         messages = [{"role": "system", "content": system_prompt}] + history
         messages.append({"role": "user", "content": user_message})
 
-        response = await self._call_llm(messages)
+        response = await self._call_llm(messages, user_message=user_message)
 
         # 7. Handle tool calls (image generation)
         image_url = None
@@ -70,6 +71,23 @@ class DialogEngine:
             # Queue image generation (async, don't block)
             image_url = await self._generate_image(character, scene, session)
 
+        # 7b. Handle scheduled messages
+        if "[SCHEDULE_MESSAGE]" in response:
+            schedule_str = response.split("[SCHEDULE_MESSAGE]")[1].strip()
+            response = response.split("[SCHEDULE_MESSAGE]")[0].strip()
+            try:
+                info = json.loads(schedule_str)
+                from mnemosyne.trigger.scheduler import get_scheduler
+                scheduler = get_scheduler()
+                if scheduler:
+                    scheduler.add_dynamic_job(character_id, info["message"], info["delay"])
+                    confirm = f"好的，我会在{info['delay']}分钟后提醒你~"
+                    response = f"{response} {confirm}" if response else confirm
+                else:
+                    response = response or "抱歉，定时功能暂时不可用~"
+            except Exception as e:
+                logging.getLogger(__name__).error("Failed to schedule message: %s", e)
+
         # 8. Update emotion
         await self.emotion_manager.update_from_conversation(character_id, user_message, response)
 
@@ -78,11 +96,12 @@ class DialogEngine:
 
         return response, image_url
 
-    async def _call_llm(self, messages: list[dict]) -> str:
+    async def _call_llm(self, messages: list[dict], user_message: str = "") -> str:
         """Call LLM via LiteLLM."""
+        logger = logging.getLogger(__name__)
         try:
             response = await litellm.acompletion(
-                model=f"{settings.llm_provider}/{settings.llm_model}" if settings.llm_provider != "openai" else settings.llm_model,
+                model=f"{settings.llm_provider}/{settings.llm_model}",
                 messages=messages,
                 api_key=settings.llm_api_key,
                 api_base=settings.llm_base_url or None,
@@ -91,20 +110,35 @@ class DialogEngine:
                 temperature=0.8,
             )
             choice = response.choices[0]
+            logger.info("LLM response: tool_calls=%s, content=%s",
+                        bool(choice.message.tool_calls),
+                        (choice.message.content or "")[:100])
             if choice.message.tool_calls:
                 # Process tool calls
                 tool_results = []
                 for tc in choice.message.tool_calls:
                     func_name = tc.function.name
                     args = json.loads(tc.function.arguments)
+                    logger.info("Tool call: %s(%s)", func_name, args)
                     if func_name == "generate_image":
                         tool_results.append(f"[IMAGE_GENERATION_REQUESTED]{args.get('scene_prompt', '')}")
                     elif func_name == "save_memory":
                         tool_results.append(f"[MEMORY_SAVED]{args.get('memory_type', 'fact')}:{args.get('content', '')}")
+                    elif func_name == "schedule_message":
+                        tool_results.append(f"[SCHEDULE_MESSAGE]{json.dumps({'delay': args.get('delay_minutes', 1), 'message': args.get('message', '')}, ensure_ascii=False)}")
                 return " ".join(tool_results) if tool_results else choice.message.content or ""
-            return choice.message.content or ""
+
+            # Fallback: if LLM didn't call tool but user asked for photo, force it
+            content = choice.message.content or ""
+            photo_keywords = ["照片", "自拍", "拍照", "photo", "selfie", "picture", "pic"]
+            if any(kw in user_message.lower() for kw in photo_keywords):
+                logger.info("LLM didn't call image tool, but user asked for photo. Forcing IMAGE_GENERATION_REQUESTED.")
+                return f"{content} [IMAGE_GENERATION_REQUESTED] portrait, smiling gently, warm lighting"
+
+            return content
         except Exception as e:
-            return f"抱歉，我现在有点不舒服，稍后再聊好吗？({type(e).__name__})"
+            logger.error("LLM call failed: %s - %s", type(e).__name__, e)
+            return f"抱歉，我现在有点不舒服，稍后再聊好吗？({type(e).__name__}: {e})"
 
     def _format_tool_schema(self, tool) -> dict:
         """Convert langchain tool to OpenAI function schema."""
@@ -144,14 +178,25 @@ class DialogEngine:
         self, character: Character, scene: str, session: AsyncSession
     ) -> str | None:
         """Generate an image using the image engine."""
+        import os
+        logger = logging.getLogger(__name__)
+
         if not character.base_image_url:
+            logger.warning("Character '%s' has no base_image_url, skipping image generation", character.name)
             return None
         try:
             from mnemosyne.image.providers import get_image_provider
             provider = get_image_provider(settings.image_provider)
-            # Build full URL for local uploads
-            base_url = f"http://localhost:{settings.web_port}{character.base_image_url}"
-            image_url = await provider.generate(prompt=scene, reference_image_url=base_url)
+
+            file_path = character.base_image_url.lstrip("/")
+            if not os.path.isfile(file_path):
+                logger.warning("Base image file not found: %s", file_path)
+                return None
+
+            logger.info("Generating image: scene='%s', file='%s'", scene, file_path)
+            image_url = await provider.generate(prompt=scene, ref_image_path=file_path)
+            logger.info("Image generated: %s", image_url)
             return image_url
-        except Exception:
+        except Exception as e:
+            logger.error("Image generation failed: %s - %s", type(e).__name__, e)
             return None

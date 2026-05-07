@@ -1,10 +1,11 @@
 """APScheduler-based proactive trigger engine."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select, func
 
@@ -71,6 +72,48 @@ class TriggerScheduler:
         """Stop the scheduler."""
         self.scheduler.shutdown(wait=False)
         logger.info("Trigger scheduler stopped")
+
+    def add_dynamic_job(self, character_id: str, message: str, delay_minutes: int):
+        """Schedule a one-time dynamic message after a delay."""
+        import uuid
+        run_date = datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)
+        job_id = f"dynamic_{character_id}_{uuid.uuid4().hex[:8]}"
+        self.scheduler.add_job(
+            self._send_dynamic_message,
+            trigger=DateTrigger(run_date=run_date),
+            args=[character_id, message],
+            id=job_id,
+            replace_existing=False,
+        )
+        logger.info("Scheduled dynamic message for character %s in %d min (job=%s)", character_id, delay_minutes, job_id)
+
+    async def _send_dynamic_message(self, character_id: str, message: str):
+        """Send a dynamically scheduled message."""
+        try:
+            async with async_session() as session:
+                result = await session.execute(select(Character).where(Character.id == character_id))
+                char = result.scalar_one_or_none()
+                if not char:
+                    logger.warning("Character %s not found for dynamic message", character_id)
+                    return
+
+                # Save to conversation history
+                msg = Conversation(
+                    character_id=char.id,
+                    role="assistant",
+                    content=message,
+                )
+                session.add(msg)
+                await session.commit()
+
+            # Store in Redis for Web UI pickup
+            await redis_client.rpush(
+                f"mnemosyne:proactive:{char.id}",
+                message,
+            )
+            logger.info("Sent dynamic message to character %s: %s", char.name, message[:50])
+        except Exception as e:
+            logger.error("Failed to send dynamic message: %s", e)
 
     async def _execute_rule(self, rule: TriggerRule):
         """Execute a trigger rule for all characters."""
@@ -181,7 +224,7 @@ class TriggerScheduler:
 
         try:
             response = await litellm.acompletion(
-                model=f"{settings.llm_provider}/{settings.llm_model}" if settings.llm_provider != "openai" else settings.llm_model,
+                model=f"{settings.llm_provider}/{settings.llm_model}",
                 messages=[{"role": "user", "content": "\n".join(context_parts)}],
                 api_key=settings.llm_api_key,
                 api_base=settings.llm_base_url or None,
@@ -239,3 +282,16 @@ def _end_of_day() -> int:
     now = datetime.now(timezone.utc)
     end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
     return int(end.timestamp())
+
+
+# Module-level singleton for dynamic scheduling from dialog engine
+_scheduler_instance: TriggerScheduler | None = None
+
+
+def set_scheduler(instance: TriggerScheduler):
+    global _scheduler_instance
+    _scheduler_instance = instance
+
+
+def get_scheduler() -> TriggerScheduler | None:
+    return _scheduler_instance

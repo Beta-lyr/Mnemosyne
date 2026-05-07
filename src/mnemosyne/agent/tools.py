@@ -21,4 +21,16 @@ async def save_memory(content: str, memory_type: str = "fact") -> str:
     return f"[MEMORY_SAVED]{memory_type}:{content}"
 
 
-TOOLS = [generate_image, save_memory]
+@tool
+async def schedule_message(delay_minutes: int, message: str) -> str:
+    """Schedule a message to be sent after a delay.
+    Use this when the user asks you to remind them of something, send a message later, or set a timer.
+    delay_minutes: how many minutes to wait before sending (minimum 1)
+    message: the message content to send
+    """
+    import json
+    delay = max(1, int(delay_minutes))
+    return f"[SCHEDULE_MESSAGE]{json.dumps({'delay': delay, 'message': message}, ensure_ascii=False)}"
+
+
+TOOLS = [generate_image, save_memory, schedule_message]

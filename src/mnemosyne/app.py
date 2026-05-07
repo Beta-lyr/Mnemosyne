@@ -28,8 +28,9 @@ async def lifespan(app: FastAPI):
 
     # Initialize trigger scheduler
     try:
-        from mnemosyne.trigger.scheduler import TriggerScheduler
+        from mnemosyne.trigger.scheduler import TriggerScheduler, set_scheduler
         trigger_scheduler = TriggerScheduler()
+        set_scheduler(trigger_scheduler)
         trigger_scheduler.start()
         logger.info("Trigger scheduler started")
     except Exception as e:

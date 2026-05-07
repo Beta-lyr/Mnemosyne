@@ -10,6 +10,9 @@ const form = ref({
   embedding_provider: 'local',
   embedding_model: '',
   image_provider: 'replicate',
+  image_api_key: '',
+  image_base_url: '',
+  image_model: '',
   replicate_api_token: '',
   fal_key: '',
   telegram_bot_token_1: '',
@@ -117,6 +120,7 @@ async function handleSave() {
       <!-- Image Generation -->
       <section class="bg-white rounded-xl border p-6">
         <h3 class="text-lg font-semibold mb-4">Image Generation</h3>
+        <p class="text-xs text-gray-400 mb-4">Unified API abstraction — switch providers by changing config below.</p>
         <div class="space-y-3">
           <div>
             <label class="block text-sm font-medium mb-1">Provider</label>
@@ -124,16 +128,25 @@ async function handleSave() {
               class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:outline-none">
               <option value="replicate">Replicate</option>
               <option value="fal">FAL.ai</option>
+              <option value="stability">Stability AI</option>
+              <option value="huggingface">Hugging Face (Free)</option>
+              <option value="openai-compatible">OpenAI Compatible</option>
             </select>
           </div>
           <div>
-            <label class="block text-sm font-medium mb-1">Replicate API Token</label>
-            <input v-model="form.replicate_api_token" type="password" placeholder="r8_..."
+            <label class="block text-sm font-medium mb-1">API Key</label>
+            <input v-model="form.image_api_key" type="password" placeholder="API key for selected provider"
               class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
           </div>
           <div>
-            <label class="block text-sm font-medium mb-1">FAL API Key</label>
-            <input v-model="form.fal_key" type="password" placeholder="..."
+            <label class="block text-sm font-medium mb-1">Base URL (optional)</label>
+            <input v-model="form.image_base_url" type="text" placeholder="https://custom-api.example.com/v1"
+              class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
+            <p class="text-xs text-gray-400 mt-1">For self-hosted or custom endpoints</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium mb-1">Model (optional)</label>
+            <input v-model="form.image_model" type="text" placeholder="Provider default if empty"
               class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:outline-none" />
           </div>
         </div>

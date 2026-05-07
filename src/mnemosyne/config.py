@@ -18,10 +18,13 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://mnemosyne:password@localhost:5432/mnemosyne"
     redis_url: str = "redis://localhost:6379/0"
 
-    # Image generation
-    image_provider: str = "replicate"
-    replicate_api_token: str = ""
-    fal_key: str = ""
+    # Image generation (unified abstraction)
+    image_provider: str = "replicate"       # replicate|fal|stability|huggingface|openai-compatible
+    image_api_key: str = ""                 # unified API key (preferred)
+    image_base_url: str = ""                # custom endpoint URL
+    image_model: str = ""                   # model name (provider default if empty)
+    replicate_api_token: str = ""           # legacy: Replicate token
+    fal_key: str = ""                       # legacy: FAL key
 
     # Web
     web_host: str = "0.0.0.0"

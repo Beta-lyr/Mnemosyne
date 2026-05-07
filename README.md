@@ -131,6 +131,15 @@ chmod +x scripts/start.sh
 ./scripts/start.sh
 ```
 
+### 本地测试
+```bash
+.\scripts\dev.ps1
+
+cd web
+npm install
+npm run dev
+```
+
 ## 配置说明
 
 复制 `.env.example` 为 `.env`，按需修改：
