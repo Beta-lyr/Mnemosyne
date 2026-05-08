@@ -73,6 +73,7 @@ class Conversation(Base):
     image_url: Mapped[str | None] = mapped_column(Text)
     audio_url: Mapped[str | None] = mapped_column(Text)
     video_url: Mapped[str | None] = mapped_column(Text)
+    media_status: Mapped[str | None] = mapped_column(String(20))  # pending / ready / cleared / read_only
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     character: Mapped["Character"] = relationship(back_populates="conversations")

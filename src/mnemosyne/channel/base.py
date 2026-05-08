@@ -17,6 +17,6 @@ class BaseChannel(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def send_message(self, chat_id: str, text: str, image_url: str | None = None):
+    async def send_message(self, chat_id: str, text: str, image_url: str | None = None, audio_url: str | None = None, video_url: str | None = None):
         """Send a message through the channel."""
         raise NotImplementedError

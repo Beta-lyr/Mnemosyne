@@ -11,6 +11,8 @@ const showCreate = ref(false)
 const showImport = ref(false)
 const showAdvanced = ref(false)
 const compiling = ref(false)
+const showDelete = ref(false)
+const deleteTarget = ref<{ id: string; name: string } | null>(null)
 const form = ref<CharacterCreate>({
   name: '',
   personality: '',
@@ -73,10 +75,16 @@ async function handleImport() {
   }
 }
 
-async function handleDelete(id: string, name: string) {
-  if (confirm(`Delete "${name}"? This will remove all memories and conversations.`)) {
-    await store.deleteCharacter(id)
-  }
+function promptDelete(id: string, name: string) {
+  deleteTarget.value = { id, name }
+  showDelete.value = true
+}
+
+async function confirmDelete() {
+  if (!deleteTarget.value) return
+  await store.deleteCharacter(deleteTarget.value.id)
+  showDelete.value = false
+  deleteTarget.value = null
 }
 
 const moodColors: Record<string, string> = {
@@ -172,7 +180,7 @@ const moodColors: Record<string, string> = {
               <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
             </svg>
           </button>
-          <button @click="handleDelete(char.id, char.name)" class="btn-ghost text-xs py-2 text-gray-400 hover:text-red-500">
+          <button @click="promptDelete(char.id, char.name)" class="btn-ghost text-xs py-2 text-gray-400 hover:text-red-500">
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
             </svg>
@@ -378,6 +386,39 @@ const moodColors: Record<string, string> = {
             <div class="flex gap-2 justify-end mt-4">
               <button @click="showImport = false" class="btn-secondary">Cancel</button>
               <button @click="handleImport" class="btn-primary">Import</button>
+            </div>
+          </div>
+        </div>
+      </transition>
+    </Teleport>
+
+    <!-- Delete Confirmation Modal -->
+    <Teleport to="body">
+      <transition
+        enter-active-class="transition duration-200 ease-out"
+        enter-from-class="opacity-0"
+        enter-to-class="opacity-100"
+        leave-active-class="transition duration-150 ease-in"
+        leave-from-class="opacity-100"
+        leave-to-class="opacity-0"
+      >
+        <div v-if="showDelete" class="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4" @click.self="showDelete = false">
+          <div class="bg-white rounded-2xl shadow-modal p-6 w-full max-w-sm animate-slide-up">
+            <div class="w-12 h-12 mx-auto mb-4 rounded-full bg-red-50 flex items-center justify-center">
+              <svg class="w-6 h-6 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </div>
+            <h3 class="text-lg font-display font-bold text-gray-800 text-center mb-1">Delete Character</h3>
+            <p class="text-sm text-gray-500 text-center mb-5">
+              Are you sure you want to delete <span class="font-semibold text-gray-700">"{{ deleteTarget?.name }}"</span>?
+              This will remove all memories and conversations.
+            </p>
+            <div class="flex gap-2 justify-end">
+              <button @click="showDelete = false" class="btn-secondary">Cancel</button>
+              <button @click="confirmDelete" class="bg-red-500 hover:bg-red-600 text-white font-semibold px-4 py-2 rounded-xl text-sm transition-colors">
+                Delete
+              </button>
             </div>
           </div>
         </div>

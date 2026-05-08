@@ -8,15 +8,14 @@ Supports multiple backends via .env configuration:
 """
 
 import logging
-import os
 import uuid
 from abc import ABC, abstractmethod
 
 import httpx
 
-logger = logging.getLogger(__name__)
+from mnemosyne.storage import storage
 
-UPLOAD_DIR = "uploads/audio"
+logger = logging.getLogger(__name__)
 
 
 class AudioProvider(ABC):
@@ -28,19 +27,18 @@ class AudioProvider(ABC):
         self.model = model
 
     @abstractmethod
-    async def generate(self, prompt: str, **kwargs) -> str:
-        """Generate audio and return a local URL path like /uploads/audio/gen_xxx.mp3."""
+    async def generate(self, prompt: str, character_id: str = "", **kwargs) -> str:
+        """Generate audio and return a URL path."""
         raise NotImplementedError
 
-    def _save_output(self, audio_bytes: bytes, ext: str = "mp3") -> str:
-        """Save audio bytes to uploads/audio dir and return URL path."""
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
+    async def _save_output(self, audio_bytes: bytes, ext: str = "mp3", character_id: str = "") -> str:
+        """Save audio bytes via storage layer and return URL path."""
         filename = f"audio_{uuid.uuid4().hex[:12]}.{ext}"
-        save_path = os.path.join(UPLOAD_DIR, filename)
-        with open(save_path, "wb") as f:
-            f.write(audio_bytes)
-        logger.info("Audio saved to %s", save_path)
-        return f"/uploads/audio/{filename}"
+        if character_id:
+            key = f"characters/{character_id}/audio/{filename}"
+        else:
+            key = f"audio/{filename}"
+        return await storage.save(audio_bytes, key)
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +50,7 @@ class ElevenLabsProvider(AudioProvider):
     DEFAULT_MODEL = "eleven_multilingual_v2"
     DEFAULT_VOICE = "21m00Tcm4TlvDq8ikWAM"  # Rachel
 
-    async def generate(self, prompt: str, **kwargs) -> str:
+    async def generate(self, prompt: str, character_id: str = "", **kwargs) -> str:
         model = self.model or self.DEFAULT_MODEL
         voice_id = kwargs.get("voice_id", self.DEFAULT_VOICE)
         base = self.base_url or "https://api.elevenlabs.io/v1"
@@ -75,7 +73,7 @@ class ElevenLabsProvider(AudioProvider):
                 },
             )
             resp.raise_for_status()
-            return self._save_output(resp.content, "mp3")
+            return await self._save_output(resp.content, "mp3", character_id)
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +84,7 @@ class HuggingFaceAudioProvider(AudioProvider):
 
     DEFAULT_MODEL = "facebook/musicgen-small"
 
-    async def generate(self, prompt: str, **kwargs) -> str:
+    async def generate(self, prompt: str, character_id: str = "", **kwargs) -> str:
         model = self.model or self.DEFAULT_MODEL
         base = self.base_url or "https://router.huggingface.co/hf-inference/models"
 
@@ -105,7 +103,7 @@ class HuggingFaceAudioProvider(AudioProvider):
                     ext = "wav"
                 elif "flac" in content_type:
                     ext = "flac"
-                return self._save_output(resp.content, ext)
+                return await self._save_output(resp.content, ext, character_id)
             raise RuntimeError(f"HuggingFace returned unexpected content type: {content_type}")
 
 
@@ -117,7 +115,7 @@ class OpenAICompatibleAudioProvider(AudioProvider):
 
     DEFAULT_MODEL = "tts-1"
 
-    async def generate(self, prompt: str, **kwargs) -> str:
+    async def generate(self, prompt: str, character_id: str = "", **kwargs) -> str:
         model = self.model or self.DEFAULT_MODEL
         base = self.base_url or "https://api.openai.com/v1"
         voice = kwargs.get("voice", "alloy")
@@ -137,7 +135,7 @@ class OpenAICompatibleAudioProvider(AudioProvider):
                 },
             )
             resp.raise_for_status()
-            return self._save_output(resp.content, "mp3")
+            return await self._save_output(resp.content, "mp3", character_id)
 
 
 # ---------------------------------------------------------------------------

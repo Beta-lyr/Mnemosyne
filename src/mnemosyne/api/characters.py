@@ -345,16 +345,14 @@ async def upload_base_image(
 ):
     char = await _get_owned_character(character_id, current_user, session)
 
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    from mnemosyne.storage import storage
+
     ext = os.path.splitext(file.filename)[1] if file.filename else ".png"
-    filename = f"{character_id}_{uuid.uuid4().hex[:8]}{ext}"
-    filepath = os.path.join(UPLOAD_DIR, filename)
-
+    filename = f"avatar{ext}"
     content = await file.read()
-    with open(filepath, "wb") as f:
-        f.write(content)
 
-    char.base_image_url = f"/uploads/images/{filename}"
+    url = await storage.save(content, f"characters/{character_id}/{filename}")
+    char.base_image_url = url
     await session.commit()
     return {"url": char.base_image_url}
 

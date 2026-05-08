@@ -9,15 +9,14 @@ Supports multiple backends via .env configuration:
 
 import asyncio
 import logging
-import os
 import uuid
 from abc import ABC, abstractmethod
 
 import httpx
 
-logger = logging.getLogger(__name__)
+from mnemosyne.storage import storage
 
-UPLOAD_DIR = "uploads/video"
+logger = logging.getLogger(__name__)
 
 
 class VideoProvider(ABC):
@@ -29,19 +28,18 @@ class VideoProvider(ABC):
         self.model = model
 
     @abstractmethod
-    async def generate(self, prompt: str, **kwargs) -> str:
-        """Generate a video and return a local URL path like /uploads/video/gen_xxx.mp4."""
+    async def generate(self, prompt: str, character_id: str = "", **kwargs) -> str:
+        """Generate a video and return a URL path."""
         raise NotImplementedError
 
-    def _save_output(self, video_bytes: bytes, ext: str = "mp4") -> str:
-        """Save video bytes to uploads/video dir and return URL path."""
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
+    async def _save_output(self, video_bytes: bytes, ext: str = "mp4", character_id: str = "") -> str:
+        """Save video bytes via storage layer and return URL path."""
         filename = f"video_{uuid.uuid4().hex[:12]}.{ext}"
-        save_path = os.path.join(UPLOAD_DIR, filename)
-        with open(save_path, "wb") as f:
-            f.write(video_bytes)
-        logger.info("Video saved to %s", save_path)
-        return f"/uploads/video/{filename}"
+        if character_id:
+            key = f"characters/{character_id}/video/{filename}"
+        else:
+            key = f"video/{filename}"
+        return await storage.save(video_bytes, key)
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +50,7 @@ class ReplicateVideoProvider(VideoProvider):
 
     DEFAULT_MODEL = "anotherjesse/zeroscope-v2-xl"
 
-    async def generate(self, prompt: str, **kwargs) -> str:
+    async def generate(self, prompt: str, character_id: str = "", **kwargs) -> str:
         model = self.model or self.DEFAULT_MODEL
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         base = self.base_url or "https://api.replicate.com/v1"
@@ -90,7 +88,7 @@ class ReplicateVideoProvider(VideoProvider):
             video_url = output if isinstance(output, str) else output[0]
             vid_resp = await client.get(video_url)
             vid_resp.raise_for_status()
-            return self._save_output(vid_resp.content)
+            return await self._save_output(vid_resp.content, character_id=character_id)
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +99,7 @@ class HuggingFaceVideoProvider(VideoProvider):
 
     DEFAULT_MODEL = "ali-vilab/text-to-video-ms-1.7b"
 
-    async def generate(self, prompt: str, **kwargs) -> str:
+    async def generate(self, prompt: str, character_id: str = "", **kwargs) -> str:
         model = self.model or self.DEFAULT_MODEL
         base = self.base_url or "https://router.huggingface.co/hf-inference/models"
 
@@ -114,7 +112,7 @@ class HuggingFaceVideoProvider(VideoProvider):
             resp.raise_for_status()
             content_type = resp.headers.get("content-type", "")
             if "video" in content_type or "octet-stream" in content_type or len(resp.content) > 10000:
-                return self._save_output(resp.content)
+                return await self._save_output(resp.content, character_id=character_id)
             raise RuntimeError(f"HuggingFace video returned unexpected content type: {content_type}")
 
 
@@ -126,7 +124,7 @@ class LumaProvider(VideoProvider):
 
     DEFAULT_MODEL = "dream-machine"
 
-    async def generate(self, prompt: str, **kwargs) -> str:
+    async def generate(self, prompt: str, character_id: str = "", **kwargs) -> str:
         base = self.base_url or "https://api.lumalabs.ai/dream-machine/v1"
 
         async with httpx.AsyncClient(timeout=600) as client:
@@ -156,7 +154,7 @@ class LumaProvider(VideoProvider):
                     video_url = status["assets"]["video"]
                     vid_resp = await client.get(video_url)
                     vid_resp.raise_for_status()
-                    return self._save_output(vid_resp.content)
+                    return await self._save_output(vid_resp.content, character_id=character_id)
                 elif status["state"] == "failed":
                     raise RuntimeError(f"Luma generation failed: {status.get('failure_reason')}")
 

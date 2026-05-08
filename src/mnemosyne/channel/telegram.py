@@ -84,6 +84,8 @@ class TelegramChannel(BaseChannel):
 
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle incoming text messages."""
+        import asyncio
+
         user_message = update.message.text
         chat_id = str(update.message.chat_id)
 
@@ -98,25 +100,45 @@ class TelegramChannel(BaseChannel):
             session.add(user_msg)
             await session.commit()
 
-            # Generate response
-            response_text, image_url, audio_url, video_url = await self.dialog_engine.process_message(
+            # Generate response (text + pending media)
+            response_text, pending_media = await self.dialog_engine.process_message(
                 character_id=self.character_id,
                 user_message=user_message,
                 session=session,
             )
 
+            has_pending = bool(pending_media)
             # Save assistant response
             assistant_msg = Conversation(
                 character_id=self.character_id,
                 role="assistant",
                 content=response_text,
-                has_image=image_url is not None,
-                image_url=image_url,
-                audio_url=audio_url,
-                video_url=video_url,
+                has_image=False,
+                media_status="pending" if has_pending else None,
             )
             session.add(assistant_msg)
             await session.commit()
+            await session.refresh(assistant_msg)
 
-        # Send response
-        await self.send_message(chat_id, response_text, image_url, audio_url, video_url)
+        # Send text response immediately
+        await self.send_message(chat_id, response_text)
+
+        # Generate and send media in background
+        if has_pending:
+            async def _send_media():
+                async def _on_complete(mid, img, aud, vid):
+                    if img:
+                        await self.send_message(chat_id, "", image_url=img)
+                    if aud:
+                        await self.send_message(chat_id, "", audio_url=aud)
+                    if vid:
+                        await self.send_message(chat_id, "", video_url=vid)
+
+                await self.dialog_engine.generate_media_background(
+                    character_id=self.character_id,
+                    message_id=str(assistant_msg.id),
+                    pending_media=pending_media,
+                    on_complete=_on_complete,
+                )
+
+            asyncio.create_task(_send_media())

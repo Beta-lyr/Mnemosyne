@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
 from mnemosyne.api import auth, characters, chat, memories, settings as settings_api
@@ -24,10 +25,15 @@ async def lifespan(app: FastAPI):
 
     # Startup
     os.makedirs("uploads", exist_ok=True)
-    os.makedirs("uploads/images", exist_ok=True)
-    os.makedirs("uploads/audio", exist_ok=True)
-    os.makedirs("uploads/video", exist_ok=True)
+    os.makedirs("uploads/characters", exist_ok=True)
     logging.basicConfig(level=logging.INFO)
+
+    # Log storage backend
+    from mnemosyne.storage import storage, S3Storage
+    if isinstance(storage, S3Storage):
+        logger.info("Storage backend: S3 (bucket=%s)", storage.bucket)
+    else:
+        logger.info("Storage backend: Local filesystem")
 
     # Initialize trigger scheduler
     try:
@@ -76,6 +82,27 @@ app.add_middleware(
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "version": "0.1.0"}
+
+
+@app.get("/api/storage/{path:path}")
+async def serve_storage(path: str):
+    """Proxy endpoint for S3-stored files. Only active when using S3 backend."""
+    from mnemosyne.storage import storage, S3Storage
+    if not isinstance(storage, S3Storage):
+        return Response(status_code=404, content="Not using S3 storage")
+    data = await storage.read(path)
+    if data is None:
+        return Response(status_code=404, content="File not found")
+    # Guess content type from extension
+    ext = os.path.splitext(path)[1].lower()
+    mime_map = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".webp": "image/webp", ".gif": "image/gif",
+        ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg",
+        ".mp4": "video/mp4", ".webm": "video/webm",
+    }
+    content_type = mime_map.get(ext, "application/octet-stream")
+    return Response(content=data, media_type=content_type)
 
 
 # Register API routers

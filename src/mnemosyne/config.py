@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     video_base_url: str = ""
     video_model: str = ""
 
+    # S3-compatible object storage (optional, falls back to local)
+    s3_bucket: str = ""
+    s3_endpoint_url: str = ""
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    s3_prefix: str = "mnemosyne/uploads"
+
     # Web
     web_host: str = "0.0.0.0"
     web_port: int = 8080

@@ -30,13 +30,18 @@ class DialogEngine:
         character_id: str,
         user_message: str,
         session: AsyncSession,
-    ) -> tuple[str, str | None, str | None, str | None]:
-        """Process a user message and return (response_text, image_url, audio_url, video_url)."""
+    ) -> tuple[str, dict]:
+        """Process a user message and return (response_text, pending_media).
+
+        pending_media is a dict with keys 'image', 'audio', 'video' whose values
+        are the prompts to generate. Callers should run generate_media_background()
+        as a background task for each non-None entry.
+        """
         # 1. Get character
         result = await session.execute(select(Character).where(Character.id == character_id))
         character = result.scalar_one_or_none()
         if not character:
-            return "Error: character not found", None
+            return "Error: character not found", {}
 
         # 2. Retrieve memories
         memories_text = await self._get_memories_text(character_id, user_message)
@@ -67,34 +72,30 @@ class DialogEngine:
 
         response = await self._call_llm(messages, user_message=user_message)
 
-        # 7. Handle tool calls (image generation)
-        image_url = None
+        # 7. Parse tool call markers — extract prompts for async media generation
+        pending_media: dict = {}
+
         if "[IMAGE_GENERATION_REQUESTED]" in response:
             scene = response.split("[IMAGE_GENERATION_REQUESTED]")[1].strip()
             response = response.split("[IMAGE_GENERATION_REQUESTED]")[0].strip()
             if not response:
-                response = f"给你看一张我的照片~"
-            image_url = await self._generate_image(character, scene, session)
+                response = "给你看一张我的照片~"
+            pending_media["image"] = scene
 
-        # 7b. Handle audio generation
-        audio_url = None
         if "[AUDIO_GENERATION_REQUESTED]" in response:
             audio_prompt = response.split("[AUDIO_GENERATION_REQUESTED]")[1].strip()
             response = response.split("[AUDIO_GENERATION_REQUESTED]")[0].strip()
             if not response:
                 response = "给你听听~"
-            audio_url = await self._generate_audio(audio_prompt)
+            pending_media["audio"] = audio_prompt
 
-        # 7c. Handle video generation
-        video_url = None
         if "[VIDEO_GENERATION_REQUESTED]" in response:
             video_prompt = response.split("[VIDEO_GENERATION_REQUESTED]")[1].strip()
             response = response.split("[VIDEO_GENERATION_REQUESTED]")[0].strip()
             if not response:
                 response = "给你看个视频~"
-            video_url = await self._generate_video(video_prompt)
+            pending_media["video"] = video_prompt
 
-        # 7d. Handle scheduled messages
         if "[SCHEDULE_MESSAGE]" in response:
             schedule_str = response.split("[SCHEDULE_MESSAGE]")[1].strip()
             response = response.split("[SCHEDULE_MESSAGE]")[0].strip()
@@ -114,10 +115,61 @@ class DialogEngine:
         # 8. Update emotion
         await self.emotion_manager.update_from_conversation(character_id, user_message, response)
 
-        # 9. Trigger async memory extraction (non-blocking)
-        # This will be handled by APScheduler or background task
+        return response, pending_media
 
-        return response, image_url, audio_url, video_url
+    async def generate_media_background(
+        self,
+        character_id: str,
+        message_id: str,
+        pending_media: dict,
+        on_complete: Any = None,
+    ):
+        """Generate media in background and update the conversation record.
+
+        Args:
+            character_id: The character's ID.
+            message_id: The Conversation record ID to update.
+            pending_media: Dict with 'image'/'audio'/'video' prompts.
+            on_complete: Optional async callback(message_id, media_type, url).
+        """
+        from mnemosyne.db.session import async_session
+
+        logger = logging.getLogger(__name__)
+        async with async_session() as session:
+            result = await session.execute(select(Character).where(Character.id == character_id))
+            character = result.scalar_one_or_none()
+            if not character:
+                return
+
+            cid = str(character.id)
+            image_url = None
+            audio_url = None
+            video_url = None
+
+            if "image" in pending_media:
+                image_url = await self._generate_image(character, pending_media["image"], session, character_id=cid)
+            if "audio" in pending_media:
+                audio_url = await self._generate_audio(pending_media["audio"], character_id=cid)
+            if "video" in pending_media:
+                video_url = await self._generate_video(pending_media["video"], character_id=cid)
+
+            # Update the conversation record
+            result = await session.execute(select(Conversation).where(Conversation.id == message_id))
+            msg = result.scalar_one_or_none()
+            if msg:
+                if image_url:
+                    msg.image_url = image_url
+                if audio_url:
+                    msg.audio_url = audio_url
+                if video_url:
+                    msg.video_url = video_url
+                msg.media_status = "ready"
+                await session.commit()
+                logger.info("Media generated for message %s: img=%s audio=%s video=%s",
+                            message_id, image_url, audio_url, video_url)
+
+            if on_complete:
+                await on_complete(message_id, image_url, audio_url, video_url)
 
     async def _call_llm(self, messages: list[dict], user_message: str = "") -> str:
         """Call LLM via LiteLLM."""
@@ -202,10 +254,9 @@ class DialogEngine:
         return [{"role": m.role, "content": m.content} for m in messages]
 
     async def _generate_image(
-        self, character: Character, scene: str, session: AsyncSession
+        self, character: Character, scene: str, session: AsyncSession, character_id: str = ""
     ) -> str | None:
         """Generate an image using the image engine."""
-        import os
         logger = logging.getLogger(__name__)
 
         if not character.base_image_url:
@@ -215,46 +266,42 @@ class DialogEngine:
             from mnemosyne.image.providers import get_image_provider
             provider = get_image_provider(settings.image_provider)
 
-            file_path = character.base_image_url.lstrip("/")
-            if not os.path.isfile(file_path):
-                logger.warning("Base image file not found: %s", file_path)
-                return None
-
             # Build enriched prompt with visual style and physical attributes
             visual_style = character.visual_style or "Photorealistic, 8k, raw photo"
             physical_attrs = character.physical_attributes or ""
             enriched_prompt = f"{visual_style}, {physical_attrs}, {scene}, masterpiece, best quality"
 
-            logger.info("Generating image: scene='%s', file='%s'", enriched_prompt, file_path)
-            image_url = await provider.generate(prompt=enriched_prompt, ref_image_path=file_path)
+            # Pass base_image_url directly — provider's _file_to_base64_uri handles both local and S3
+            logger.info("Generating image: scene='%s', ref='%s'", enriched_prompt, character.base_image_url)
+            image_url = await provider.generate(prompt=enriched_prompt, ref_image_path=character.base_image_url, character_id=character_id)
             logger.info("Image generated: %s", image_url)
             return image_url
         except Exception as e:
             logger.error("Image generation failed: %s - %s", type(e).__name__, e)
             return None
 
-    async def _generate_audio(self, prompt: str) -> str | None:
+    async def _generate_audio(self, prompt: str, character_id: str = "") -> str | None:
         """Generate audio using the audio engine."""
         logger = logging.getLogger(__name__)
         try:
             from mnemosyne.audio.providers import get_audio_provider
             provider = get_audio_provider()
             logger.info("Generating audio: prompt='%s'", prompt)
-            audio_url = await provider.generate(prompt=prompt)
+            audio_url = await provider.generate(prompt=prompt, character_id=character_id)
             logger.info("Audio generated: %s", audio_url)
             return audio_url
         except Exception as e:
             logger.error("Audio generation failed: %s - %s", type(e).__name__, e)
             return None
 
-    async def _generate_video(self, prompt: str) -> str | None:
+    async def _generate_video(self, prompt: str, character_id: str = "") -> str | None:
         """Generate video using the video engine."""
         logger = logging.getLogger(__name__)
         try:
             from mnemosyne.video.providers import get_video_provider
             provider = get_video_provider()
             logger.info("Generating video: prompt='%s'", prompt)
-            video_url = await provider.generate(prompt=prompt)
+            video_url = await provider.generate(prompt=prompt, character_id=character_id)
             logger.info("Video generated: %s", video_url)
             return video_url
         except Exception as e:
