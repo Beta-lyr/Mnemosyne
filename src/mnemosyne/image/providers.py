@@ -20,7 +20,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-UPLOAD_DIR = "uploads"
+UPLOAD_DIR = "uploads/images"
 
 
 class ImageProvider(ABC):
@@ -44,7 +44,7 @@ class ImageProvider(ABC):
         with open(save_path, "wb") as f:
             f.write(image_bytes)
         logger.info("Image saved to %s", save_path)
-        return f"/uploads/{filename}"
+        return f"/uploads/images/{filename}"
 
     @staticmethod
     def _file_to_base64_uri(path: str) -> str:

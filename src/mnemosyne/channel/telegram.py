@@ -43,13 +43,24 @@ class TelegramChannel(BaseChannel):
             await self.app.shutdown()
             logger.info("Telegram bot stopped for character %s", self.character_id)
 
-    async def send_message(self, chat_id: str, text: str, image_url: str | None = None):
+    async def send_message(
+        self,
+        chat_id: str,
+        text: str,
+        image_url: str | None = None,
+        audio_url: str | None = None,
+        video_url: str | None = None,
+    ):
         """Send a message via Telegram."""
         if not self.app:
             return
         try:
             if image_url:
                 await self.app.bot.send_photo(chat_id=chat_id, photo=image_url, caption=text)
+            elif audio_url:
+                await self.app.bot.send_audio(chat_id=chat_id, audio=audio_url, caption=text)
+            elif video_url:
+                await self.app.bot.send_video(chat_id=chat_id, video=video_url, caption=text)
             else:
                 await self.app.bot.send_message(chat_id=chat_id, text=text)
         except Exception as e:
@@ -88,7 +99,7 @@ class TelegramChannel(BaseChannel):
             await session.commit()
 
             # Generate response
-            response_text, image_url = await self.dialog_engine.process_message(
+            response_text, image_url, audio_url, video_url = await self.dialog_engine.process_message(
                 character_id=self.character_id,
                 user_message=user_message,
                 session=session,
@@ -101,9 +112,11 @@ class TelegramChannel(BaseChannel):
                 content=response_text,
                 has_image=image_url is not None,
                 image_url=image_url,
+                audio_url=audio_url,
+                video_url=video_url,
             )
             session.add(assistant_msg)
             await session.commit()
 
         # Send response
-        await self.send_message(chat_id, response_text, image_url)
+        await self.send_message(chat_id, response_text, image_url, audio_url, video_url)

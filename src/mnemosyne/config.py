@@ -26,6 +26,18 @@ class Settings(BaseSettings):
     replicate_api_token: str = ""           # legacy: Replicate token
     fal_key: str = ""                       # legacy: FAL key
 
+    # Audio generation (unified abstraction)
+    audio_provider: str = "elevenlabs"      # elevenlabs|huggingface|openai-compatible
+    audio_api_key: str = ""
+    audio_base_url: str = ""
+    audio_model: str = ""
+
+    # Video generation (unified abstraction)
+    video_provider: str = "replicate"       # replicate|huggingface|luma
+    video_api_key: str = ""
+    video_base_url: str = ""
+    video_model: str = ""
+
     # Web
     web_host: str = "0.0.0.0"
     web_port: int = 8080

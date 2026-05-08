@@ -39,6 +39,22 @@ class Character(Base):
     card_export: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # --- Extended persona fields ---
+    gender: Mapped[str | None] = mapped_column(String(20))
+    age: Mapped[str | None] = mapped_column(String(20))
+    occupation: Mapped[str | None] = mapped_column(String(100))
+    mbti: Mapped[str | None] = mapped_column(String(4))
+    zodiac: Mapped[str | None] = mapped_column(String(20))
+    attachment_style: Mapped[str | None] = mapped_column(String(20))  # secure/anxious/avoidant
+    core_vulnerability: Mapped[str | None] = mapped_column(Text)
+    tone: Mapped[str | None] = mapped_column(String(50))  # 基调：慵懒/元气/知性
+    quirks: Mapped[str | None] = mapped_column(Text)  # 口癖/小动作
+    emoji_usage: Mapped[str | None] = mapped_column(String(10))  # high/mid/low/minimal
+    visual_style: Mapped[str | None] = mapped_column(String(50))  # photorealistic/anime
+    physical_attributes: Mapped[str | None] = mapped_column(Text)  # 体态外貌描述(英文tags)
+    processed_personality: Mapped[str | None] = mapped_column(Text)  # 编译后的深度人设
+    interaction_rules: Mapped[list | None] = mapped_column(JSONB)  # 行为准则数组
+
     user: Mapped["User"] = relationship(back_populates="characters")
     conversations: Mapped[list["Conversation"]] = relationship(back_populates="character", cascade="all, delete-orphan")
     memories: Mapped[list["Memory"]] = relationship(back_populates="character", cascade="all, delete-orphan")
@@ -55,6 +71,8 @@ class Conversation(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     has_image: Mapped[bool] = mapped_column(Boolean, default=False)
     image_url: Mapped[str | None] = mapped_column(Text)
+    audio_url: Mapped[str | None] = mapped_column(Text)
+    video_url: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     character: Mapped["Character"] = relationship(back_populates="conversations")

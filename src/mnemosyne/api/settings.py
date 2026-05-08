@@ -26,6 +26,14 @@ class SettingsResponse(BaseModel):
     image_api_key: str
     image_base_url: str
     image_model: str
+    audio_provider: str
+    audio_api_key: str
+    audio_base_url: str
+    audio_model: str
+    video_provider: str
+    video_api_key: str
+    video_base_url: str
+    video_model: str
     replicate_api_token: str
     fal_key: str
     telegram_bot_token_1: str
@@ -48,6 +56,14 @@ class SettingsUpdate(BaseModel):
     image_api_key: str | None = None
     image_base_url: str | None = None
     image_model: str | None = None
+    audio_provider: str | None = None
+    audio_api_key: str | None = None
+    audio_base_url: str | None = None
+    audio_model: str | None = None
+    video_provider: str | None = None
+    video_api_key: str | None = None
+    video_base_url: str | None = None
+    video_model: str | None = None
     replicate_api_token: str | None = None
     fal_key: str | None = None
     telegram_bot_token_1: str | None = None
@@ -71,6 +87,14 @@ async def get_settings(current_user: User = Depends(get_current_user)):
         image_api_key=settings.image_api_key,
         image_base_url=settings.image_base_url,
         image_model=settings.image_model,
+        audio_provider=settings.audio_provider,
+        audio_api_key=settings.audio_api_key,
+        audio_base_url=settings.audio_base_url,
+        audio_model=settings.audio_model,
+        video_provider=settings.video_provider,
+        video_api_key=settings.video_api_key,
+        video_base_url=settings.video_base_url,
+        video_model=settings.video_model,
         replicate_api_token=settings.replicate_api_token,
         fal_key=settings.fal_key,
         telegram_bot_token_1=os.getenv("TELEGRAM_BOT_TOKEN_1", ""),

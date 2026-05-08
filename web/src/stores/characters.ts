@@ -12,6 +12,21 @@ export interface Character {
   voice_style: Record<string, unknown>
   telegram_token: string | null
   created_at: string
+  // Extended persona fields
+  gender: string | null
+  age: string | null
+  occupation: string | null
+  mbti: string | null
+  zodiac: string | null
+  attachment_style: string | null
+  core_vulnerability: string | null
+  tone: string | null
+  quirks: string | null
+  emoji_usage: string | null
+  visual_style: string | null
+  physical_attributes: string | null
+  processed_personality: string | null
+  interaction_rules: string[] | null
 }
 
 export interface CharacterCreate {
@@ -21,6 +36,20 @@ export interface CharacterCreate {
   mood_default?: string
   voice_style?: Record<string, unknown>
   telegram_token?: string
+  // Extended persona fields
+  gender?: string
+  age?: string
+  occupation?: string
+  mbti?: string
+  zodiac?: string
+  attachment_style?: string
+  core_vulnerability?: string
+  tone?: string
+  quirks?: string
+  emoji_usage?: string
+  visual_style?: string
+  physical_attributes?: string
+  user_free_text?: string
 }
 
 export const useCharacterStore = defineStore('characters', () => {

@@ -24,6 +24,9 @@ async def lifespan(app: FastAPI):
 
     # Startup
     os.makedirs("uploads", exist_ok=True)
+    os.makedirs("uploads/images", exist_ok=True)
+    os.makedirs("uploads/audio", exist_ok=True)
+    os.makedirs("uploads/video", exist_ok=True)
     logging.basicConfig(level=logging.INFO)
 
     # Initialize trigger scheduler

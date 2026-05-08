@@ -6,6 +6,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   image_url?: string | null
+  audio_url?: string | null
+  video_url?: string | null
 }
 
 export const useChatStore = defineStore('chat', () => {

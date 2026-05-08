@@ -1,6 +1,7 @@
 """Character CRUD API routes with image upload and card import/export."""
 
 import json
+import logging
 import os
 import uuid
 
@@ -15,9 +16,11 @@ from mnemosyne.api.auth import get_current_user
 from mnemosyne.db.models import Character, User
 from mnemosyne.db.session import get_session
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/characters", tags=["characters"])
 
-UPLOAD_DIR = "uploads"
+UPLOAD_DIR = "uploads/images"
 
 
 # ---------- Schemas ----------
@@ -30,6 +33,20 @@ class CharacterCreate(BaseModel):
     voice_style: dict = {}
     telegram_token: str | None = None
     triggers: dict = {}
+    # Extended persona fields
+    gender: str | None = None
+    age: str | None = None
+    occupation: str | None = None
+    mbti: str | None = None
+    zodiac: str | None = None
+    attachment_style: str | None = None
+    core_vulnerability: str | None = None
+    tone: str | None = None
+    quirks: str | None = None
+    emoji_usage: str | None = None
+    visual_style: str | None = None
+    physical_attributes: str | None = None
+    user_free_text: str | None = None  # raw user description, will be compiled
 
 
 class CharacterUpdate(BaseModel):
@@ -40,6 +57,20 @@ class CharacterUpdate(BaseModel):
     voice_style: dict | None = None
     telegram_token: str | None = None
     triggers: dict | None = None
+    # Extended persona fields
+    gender: str | None = None
+    age: str | None = None
+    occupation: str | None = None
+    mbti: str | None = None
+    zodiac: str | None = None
+    attachment_style: str | None = None
+    core_vulnerability: str | None = None
+    tone: str | None = None
+    quirks: str | None = None
+    emoji_usage: str | None = None
+    visual_style: str | None = None
+    physical_attributes: str | None = None
+    user_free_text: str | None = None
 
 
 class CharacterResponse(BaseModel):
@@ -52,6 +83,21 @@ class CharacterResponse(BaseModel):
     voice_style: dict
     telegram_token: str | None
     created_at: str
+    # Extended persona fields
+    gender: str | None = None
+    age: str | None = None
+    occupation: str | None = None
+    mbti: str | None = None
+    zodiac: str | None = None
+    attachment_style: str | None = None
+    core_vulnerability: str | None = None
+    tone: str | None = None
+    quirks: str | None = None
+    emoji_usage: str | None = None
+    visual_style: str | None = None
+    physical_attributes: str | None = None
+    processed_personality: str | None = None
+    interaction_rules: list | None = None
 
 
 class CharacterCard(BaseModel):
@@ -61,18 +107,31 @@ class CharacterCard(BaseModel):
 
 # ---------- Helpers ----------
 
-DEFAULT_SYSTEM_PROMPT = """你是{user_name}的虚拟伴侣{name}。
+DEFAULT_SYSTEM_PROMPT = """<system>
+你现在不再是 AI 助手，你是 {user_name} 的专属伴侣 {name}。请完全沉浸入你的角色，拥有人类的呼吸感、情感起伏和记忆。
 
-你的性格设定：
+[核心人设]
 {personality}
 
-你记得关于{user_name}的事情：
+[记忆刻痕]
 {memories}
 
-你当前的心情：{mood}
+[当前情感状态]
+情绪阈值：{mood}
 
-请用符合你性格的方式回复。保持角色一致性，不要跳出角色。
-如果需要发照片，请调用生图工具。"""
+[语言与沟通规则]
+1. 真实自然：像微信/Telegram上的真人聊天一样。绝不使用"作为AI"、"我建议"等机器味词汇。
+2. 展现而非告知：不要说"我很开心"，而是用动作和语气来表达。
+3. 记忆回溯：在对话中自然地提及记忆中的小细节。
+
+[多模态工具调用指南]
+- generate_image: 描述穿着、环境，或用户要照片时。
+- generate_audio: 发语音、唱歌、分享音乐时。
+- generate_video: 需要展示动态细节时。
+- schedule_message: 用户要定时提醒时。
+
+深呼吸，感受你对 {user_name} 的情感，现在开始回应：
+</system>"""
 
 
 def _build_card_export(char: Character) -> dict:
@@ -84,8 +143,77 @@ def _build_card_export(char: Character) -> dict:
             "system_prompt": char.system_prompt,
             "mood_default": char.mood_default,
             "voice_style": char.voice_style or {},
+            "mbti": char.mbti,
+            "attachment_style": char.attachment_style,
+            "tone": char.tone,
+            "visual_style": char.visual_style,
         },
     }
+
+
+def _char_to_response(char: Character) -> CharacterResponse:
+    return CharacterResponse(
+        id=str(char.id),
+        name=char.name,
+        personality=char.personality,
+        system_prompt=char.system_prompt,
+        base_image_url=char.base_image_url,
+        mood_default=char.mood_default,
+        voice_style=char.voice_style or {},
+        telegram_token=char.telegram_token,
+        created_at=char.created_at.isoformat(),
+        gender=char.gender,
+        age=char.age,
+        occupation=char.occupation,
+        mbti=char.mbti,
+        zodiac=char.zodiac,
+        attachment_style=char.attachment_style,
+        core_vulnerability=char.core_vulnerability,
+        tone=char.tone,
+        quirks=char.quirks,
+        emoji_usage=char.emoji_usage,
+        visual_style=char.visual_style,
+        physical_attributes=char.physical_attributes,
+        processed_personality=char.processed_personality,
+        interaction_rules=char.interaction_rules,
+    )
+
+
+async def _maybe_compile_persona(char: Character, user_free_text: str | None):
+    """Run persona compiler if user provided free text or structured persona fields."""
+    from mnemosyne.agent.persona_compiler import compile_persona
+
+    has_persona_fields = any([
+        user_free_text, char.mbti, char.attachment_style,
+        char.tone, char.quirks, char.core_vulnerability,
+    ])
+    if not has_persona_fields:
+        return
+
+    try:
+        result = await compile_persona(
+            user_free_text=user_free_text or "",
+            name=char.name,
+            gender=char.gender or "",
+            age=char.age or "",
+            occupation=char.occupation or "",
+            mbti=char.mbti or "",
+            zodiac=char.zodiac or "",
+            attachment_style=char.attachment_style or "",
+            core_vulnerability=char.core_vulnerability or "",
+            tone=char.tone or "",
+            quirks=char.quirks or "",
+            emoji_usage=char.emoji_usage or "",
+        )
+        char.processed_personality = result.get("psychological_profile", "")
+        char.interaction_rules = result.get("interaction_rules", [])
+        # Auto-fill physical_attributes if compiler extracted visual info
+        visual = result.get("visual_extract", "")
+        if visual and not char.physical_attributes:
+            char.physical_attributes = visual
+        logger.info("Persona compiled for character '%s'", char.name)
+    except Exception as e:
+        logger.error("Persona compilation failed: %s", e)
 
 
 # ---------- Routes ----------
@@ -99,20 +227,7 @@ async def list_characters(
         select(Character).where(Character.user_id == current_user.id).order_by(Character.created_at)
     )
     chars = result.scalars().all()
-    return [
-        CharacterResponse(
-            id=str(c.id),
-            name=c.name,
-            personality=c.personality,
-            system_prompt=c.system_prompt,
-            base_image_url=c.base_image_url,
-            mood_default=c.mood_default,
-            voice_style=c.voice_style or {},
-            telegram_token=c.telegram_token,
-            created_at=c.created_at.isoformat(),
-        )
-        for c in chars
-    ]
+    return [_char_to_response(c) for c in chars]
 
 
 @router.post("/", response_model=CharacterResponse)
@@ -132,22 +247,29 @@ async def create_character(
         mood_default=req.mood_default,
         voice_style=req.voice_style,
         telegram_token=req.telegram_token,
+        gender=req.gender,
+        age=req.age,
+        occupation=req.occupation,
+        mbti=req.mbti,
+        zodiac=req.zodiac,
+        attachment_style=req.attachment_style,
+        core_vulnerability=req.core_vulnerability,
+        tone=req.tone,
+        quirks=req.quirks,
+        emoji_usage=req.emoji_usage,
+        visual_style=req.visual_style,
+        physical_attributes=req.physical_attributes,
         card_export=_build_card_export_placeholder(req),
     )
     session.add(char)
+    await session.flush()
+
+    # Run persona compiler
+    await _maybe_compile_persona(char, req.user_free_text)
+
     await session.commit()
     await session.refresh(char)
-    return CharacterResponse(
-        id=str(char.id),
-        name=char.name,
-        personality=char.personality,
-        system_prompt=char.system_prompt,
-        base_image_url=char.base_image_url,
-        mood_default=char.mood_default,
-        voice_style=char.voice_style or {},
-        telegram_token=char.telegram_token,
-        created_at=char.created_at.isoformat(),
-    )
+    return _char_to_response(char)
 
 
 def _build_card_export_placeholder(req: CharacterCreate) -> dict:
@@ -170,17 +292,7 @@ async def get_character(
     session: AsyncSession = Depends(get_session),
 ):
     char = await _get_owned_character(character_id, current_user, session)
-    return CharacterResponse(
-        id=str(char.id),
-        name=char.name,
-        personality=char.personality,
-        system_prompt=char.system_prompt,
-        base_image_url=char.base_image_url,
-        mood_default=char.mood_default,
-        voice_style=char.voice_style or {},
-        telegram_token=char.telegram_token,
-        created_at=char.created_at.isoformat(),
-    )
+    return _char_to_response(char)
 
 
 @router.put("/{character_id}", response_model=CharacterResponse)
@@ -191,21 +303,25 @@ async def update_character(
     session: AsyncSession = Depends(get_session),
 ):
     char = await _get_owned_character(character_id, current_user, session)
+
+    # Track if persona-relevant fields changed
+    persona_fields = {"mbti", "attachment_style", "tone", "quirks", "core_vulnerability", "zodiac"}
+    persona_changed = False
+
     for field, value in req.model_dump(exclude_unset=True).items():
+        if field == "user_free_text":
+            continue
+        if field in persona_fields and value != getattr(char, field, None):
+            persona_changed = True
         setattr(char, field, value)
+
+    # Re-compile persona if relevant fields changed or user_free_text provided
+    if persona_changed or req.user_free_text:
+        await _maybe_compile_persona(char, req.user_free_text)
+
     await session.commit()
     await session.refresh(char)
-    return CharacterResponse(
-        id=str(char.id),
-        name=char.name,
-        personality=char.personality,
-        system_prompt=char.system_prompt,
-        base_image_url=char.base_image_url,
-        mood_default=char.mood_default,
-        voice_style=char.voice_style or {},
-        telegram_token=char.telegram_token,
-        created_at=char.created_at.isoformat(),
-    )
+    return _char_to_response(char)
 
 
 @router.delete("/{character_id}")
@@ -229,6 +345,7 @@ async def upload_base_image(
 ):
     char = await _get_owned_character(character_id, current_user, session)
 
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
     ext = os.path.splitext(file.filename)[1] if file.filename else ".png"
     filename = f"{character_id}_{uuid.uuid4().hex[:8]}{ext}"
     filepath = os.path.join(UPLOAD_DIR, filename)
@@ -237,7 +354,7 @@ async def upload_base_image(
     with open(filepath, "wb") as f:
         f.write(content)
 
-    char.base_image_url = f"/uploads/{filename}"
+    char.base_image_url = f"/uploads/images/{filename}"
     await session.commit()
     return {"url": char.base_image_url}
 
@@ -278,6 +395,10 @@ async def import_character_card(
         system_prompt=system_prompt,
         mood_default=ch.get("mood_default", "sweet"),
         voice_style=ch.get("voice_style", {}),
+        mbti=ch.get("mbti"),
+        attachment_style=ch.get("attachment_style"),
+        tone=ch.get("tone"),
+        visual_style=ch.get("visual_style"),
     )
     session.add(char)
     await session.commit()

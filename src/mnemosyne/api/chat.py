@@ -25,6 +25,8 @@ class MessageResponse(BaseModel):
     role: str
     content: str
     image_url: str | None = None
+    audio_url: str | None = None
+    video_url: str | None = None
 
 
 @router.get("/{character_id}/history", response_model=list[MessageResponse])
@@ -47,6 +49,8 @@ async def get_chat_history(
             role=m.role,
             content=m.content,
             image_url=m.image_url,
+            audio_url=m.audio_url,
+            video_url=m.video_url,
         )
         for m in messages
     ]
@@ -67,7 +71,7 @@ async def send_message_rest(
     await session.commit()
 
     # Generate response
-    response_text, image_url = await dialog_engine.process_message(
+    response_text, image_url, audio_url, video_url = await dialog_engine.process_message(
         character_id=character_id,
         user_message=req.content,
         session=session,
@@ -80,11 +84,13 @@ async def send_message_rest(
         content=response_text,
         has_image=image_url is not None,
         image_url=image_url,
+        audio_url=audio_url,
+        video_url=video_url,
     )
     session.add(assistant_msg)
     await session.commit()
 
-    return MessageResponse(role="assistant", content=response_text, image_url=image_url)
+    return MessageResponse(role="assistant", content=response_text, image_url=image_url, audio_url=audio_url, video_url=video_url)
 
 
 @router.websocket("/{character_id}/ws")
@@ -107,7 +113,7 @@ async def chat_websocket(websocket: WebSocket, character_id: str):
                 await session.commit()
 
                 # Generate response
-                response_text, image_url = await dialog_engine.process_message(
+                response_text, image_url, audio_url, video_url = await dialog_engine.process_message(
                     character_id=character_id,
                     user_message=content,
                     session=session,
@@ -120,12 +126,14 @@ async def chat_websocket(websocket: WebSocket, character_id: str):
                     content=response_text,
                     has_image=image_url is not None,
                     image_url=image_url,
+                    audio_url=audio_url,
+                    video_url=video_url,
                 )
                 session.add(assistant_msg)
                 await session.commit()
 
             await websocket.send_text(
-                json.dumps({"role": "assistant", "content": response_text, "image_url": image_url})
+                json.dumps({"role": "assistant", "content": response_text, "image_url": image_url, "audio_url": audio_url, "video_url": video_url})
             )
 
     except WebSocketDisconnect:

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useChatStore } from '../stores/chat'
 import { useCharacterStore } from '../stores/characters'
@@ -13,6 +13,9 @@ const charStore = useCharacterStore()
 const character = ref<Character | null>(null)
 const inputText = ref('')
 const messagesContainer = ref<HTMLDivElement | null>(null)
+const waitingForResponse = ref(false)
+
+const isTyping = computed(() => waitingForResponse.value || chatStore.loading)
 
 onMounted(async () => {
   const id = route.params.id as string
@@ -29,6 +32,7 @@ onMounted(async () => {
 
   // Connect WebSocket for real-time chat
   chatStore.connectWebSocket(id, () => {
+    waitingForResponse.value = false
     scrollToBottom()
   })
 })
@@ -53,6 +57,7 @@ async function handleSend() {
 
   // Use WebSocket if connected, otherwise REST
   if (chatStore.ws && chatStore.ws.readyState === WebSocket.OPEN) {
+    waitingForResponse.value = true
     chatStore.sendViaWebSocket(text)
   } else {
     await chatStore.sendMessage(character.value.id, text)
@@ -69,55 +74,190 @@ function handleKeydown(e: KeyboardEvent) {
 </script>
 
 <template>
-  <div class="flex flex-col h-[calc(100vh-7rem)]">
-    <!-- Header -->
-    <div class="flex items-center gap-3 mb-4">
-      <button @click="router.push('/')" class="text-gray-500 hover:text-gray-700">&larr;</button>
-      <div class="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center overflow-hidden">
-        <img v-if="character?.base_image_url" :src="character.base_image_url" class="w-full h-full object-cover" />
-        <span v-else class="text-purple-600 font-bold">{{ character?.name?.[0] }}</span>
+  <div class="flex flex-col h-[calc(100vh-7rem)] animate-fade-in">
+
+    <!-- Chat Header -->
+    <div class="flex items-center gap-3 mb-4 pb-4 border-b border-gray-100">
+      <button
+        @click="router.push('/')"
+        class="btn-ghost p-2 rounded-xl"
+        aria-label="Back"
+      >
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+        </svg>
+      </button>
+
+      <div class="w-10 h-10 rounded-full overflow-hidden bg-primary-100 flex items-center justify-center ring-2 ring-primary/20">
+        <img
+          v-if="character?.base_image_url"
+          :src="character.base_image_url"
+          :alt="character?.name"
+          class="w-full h-full object-cover"
+        />
+        <span v-else class="text-primary font-bold text-sm">
+          {{ character?.name?.[0]?.toUpperCase() }}
+        </span>
       </div>
-      <div>
-        <h2 class="font-bold text-lg">{{ character?.name }}</h2>
-        <p class="text-xs text-gray-400">Mood: {{ character?.mood_default }}</p>
+
+      <div class="flex-1 min-w-0">
+        <h2 class="font-display font-bold text-lg leading-tight truncate">
+          {{ character?.name }}
+        </h2>
+        <span class="badge badge-primary text-[10px] mt-0.5">
+          {{ character?.mood_default || 'Neutral' }}
+        </span>
       </div>
     </div>
 
-    <!-- Messages -->
-    <div ref="messagesContainer" class="flex-1 overflow-y-auto bg-white rounded-xl border p-4 mb-4 space-y-3">
-      <div v-if="chatStore.messages.length === 0" class="text-center text-gray-400 py-12">
-        Start a conversation with {{ character?.name }}...
+    <!-- Messages Area -->
+    <div
+      ref="messagesContainer"
+      class="flex-1 overflow-y-auto px-1 pb-4 space-y-3"
+    >
+      <!-- Empty State -->
+      <div
+        v-if="chatStore.messages.length === 0 && !isTyping"
+        class="flex flex-col items-center justify-center h-full text-center py-16"
+      >
+        <div class="w-20 h-20 rounded-full bg-primary-50 flex items-center justify-center mb-4">
+          <svg class="w-10 h-10 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+              d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+          </svg>
+        </div>
+        <p class="font-display text-lg text-gray-600 mb-1">
+          Start chatting with {{ character?.name }}
+        </p>
+        <p class="text-sm text-gray-400 max-w-xs">
+          Say hello and begin your conversation!
+        </p>
       </div>
 
-      <div v-for="(msg, i) in chatStore.messages" :key="i"
-        :class="msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'">
-        <div :class="[
-          'max-w-[70%] rounded-2xl px-4 py-2',
-          msg.role === 'user'
-            ? 'bg-purple-600 text-white rounded-br-sm'
-            : 'bg-gray-100 text-gray-800 rounded-bl-sm'
-        ]">
-          <p class="whitespace-pre-wrap">{{ msg.content }}</p>
-          <img v-if="msg.image_url" :src="msg.image_url" class="mt-2 rounded-lg max-w-xs" />
+      <!-- Message Bubbles -->
+      <div
+        v-for="(msg, i) in chatStore.messages"
+        :key="i"
+        :class="msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'"
+        class="animate-slide-up"
+      >
+        <!-- Assistant avatar (small, left side) -->
+        <div v-if="msg.role !== 'user'" class="flex items-end gap-2 max-w-[75%]">
+          <div class="w-7 h-7 rounded-full overflow-hidden bg-primary-100 flex-shrink-0 flex items-center justify-center">
+            <img
+              v-if="character?.base_image_url"
+              :src="character.base_image_url"
+              :alt="character?.name"
+              class="w-full h-full object-cover"
+            />
+            <span v-else class="text-primary font-bold text-[10px]">
+              {{ character?.name?.[0]?.toUpperCase() }}
+            </span>
+          </div>
+          <div>
+            <div class="bg-gray-100 text-gray-800 rounded-2xl rounded-bl-sm px-4 py-2.5 shadow-bubble">
+              <p class="whitespace-pre-wrap text-sm leading-relaxed font-sans">{{ msg.content }}</p>
+              <img
+                v-if="msg.image_url"
+                :src="msg.image_url"
+                class="mt-2 rounded-lg max-w-[240px] w-full object-cover"
+                alt="Message image"
+              />
+              <audio
+                v-if="msg.audio_url"
+                :src="msg.audio_url"
+                controls
+                class="mt-2 w-full max-w-[240px]"
+              ></audio>
+              <video
+                v-if="msg.video_url"
+                :src="msg.video_url"
+                controls
+                class="mt-2 rounded-lg max-w-[240px] w-full"
+              ></video>
+            </div>
+          </div>
+        </div>
+
+        <!-- User message (right side) -->
+        <div v-else class="max-w-[75%]">
+          <div class="bg-primary text-white rounded-2xl rounded-br-sm px-4 py-2.5 shadow-bubble">
+            <p class="whitespace-pre-wrap text-sm leading-relaxed font-sans">{{ msg.content }}</p>
+            <img
+              v-if="msg.image_url"
+              :src="msg.image_url"
+              class="mt-2 rounded-lg max-w-[240px] w-full object-cover"
+              alt="Message image"
+            />
+            <audio
+              v-if="msg.audio_url"
+              :src="msg.audio_url"
+              controls
+              class="mt-2 w-full max-w-[240px]"
+            ></audio>
+            <video
+              v-if="msg.video_url"
+              :src="msg.video_url"
+              controls
+              class="mt-2 rounded-lg max-w-[240px] w-full"
+            ></video>
+          </div>
         </div>
       </div>
 
-      <div v-if="chatStore.loading" class="flex justify-start">
-        <div class="bg-gray-100 rounded-2xl rounded-bl-sm px-4 py-2">
-          <span class="animate-pulse">...</span>
+      <!-- Typing Indicator -->
+      <div v-if="isTyping" class="flex items-end gap-2 animate-slide-up">
+        <div class="w-7 h-7 rounded-full overflow-hidden bg-primary-100 flex-shrink-0 flex items-center justify-center">
+          <img
+            v-if="character?.base_image_url"
+            :src="character.base_image_url"
+            :alt="character?.name"
+            class="w-full h-full object-cover"
+          />
+          <span v-else class="text-primary font-bold text-[10px]">
+            {{ character?.name?.[0]?.toUpperCase() }}
+          </span>
+        </div>
+        <div class="bg-gray-100 rounded-2xl rounded-bl-sm px-4 py-3 shadow-bubble">
+          <div class="flex items-center gap-1">
+            <span
+              class="w-2 h-2 bg-gray-400 rounded-full animate-typing"
+              style="animation-delay: 0s"
+            ></span>
+            <span
+              class="w-2 h-2 bg-gray-400 rounded-full animate-typing"
+              style="animation-delay: 0.2s"
+            ></span>
+            <span
+              class="w-2 h-2 bg-gray-400 rounded-full animate-typing"
+              style="animation-delay: 0.4s"
+            ></span>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- Input -->
-    <div class="flex gap-2">
-      <textarea v-model="inputText" @keydown="handleKeydown" rows="1"
-        placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
-        class="flex-1 border rounded-xl px-4 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-purple-500"></textarea>
-      <button @click="handleSend" :disabled="!inputText.trim() || chatStore.loading"
-        class="bg-purple-600 text-white px-6 py-2 rounded-xl hover:bg-purple-700 disabled:opacity-50">
-        Send
+    <!-- Input Area -->
+    <div class="flex items-end gap-2 pt-3 border-t border-gray-100">
+      <textarea
+        v-model="inputText"
+        @keydown="handleKeydown"
+        rows="1"
+        placeholder="Type a message..."
+        class="input flex-1 resize-none min-h-[44px] max-h-[120px] py-3"
+      ></textarea>
+      <button
+        @click="handleSend"
+        :disabled="!inputText.trim() || isTyping"
+        class="btn-primary p-3 rounded-xl flex-shrink-0"
+        aria-label="Send message"
+      >
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+        </svg>
       </button>
     </div>
+
   </div>
 </template>
