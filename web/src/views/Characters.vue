@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCharacterStore } from '../stores/characters'
 import type { CharacterCreate } from '../stores/characters'
+import axios from 'axios'
 
 const router = useRouter()
 const store = useCharacterStore()
@@ -12,7 +13,9 @@ const showImport = ref(false)
 const showAdvanced = ref(false)
 const compiling = ref(false)
 const showDelete = ref(false)
+const showTemplates = ref(false)
 const deleteTarget = ref<{ id: string; name: string } | null>(null)
+const templates = ref<any[]>([])
 const form = ref<CharacterCreate>({
   name: '',
   personality: '',
@@ -87,6 +90,40 @@ async function confirmDelete() {
   deleteTarget.value = null
 }
 
+async function fetchTemplates() {
+  try {
+    const { data } = await axios.get('/api/characters/templates')
+    templates.value = data
+  } catch (e) {
+    console.error('Failed to fetch templates:', e)
+  }
+}
+
+function applyTemplate(template: any) {
+  form.value = {
+    name: template.name,
+    personality: template.personality,
+    mood_default: template.mood_default || 'sweet',
+    voice_style: {},
+    gender: template.gender || '',
+    age: template.age || '',
+    occupation: template.occupation || '',
+    mbti: template.mbti || '',
+    zodiac: template.zodiac || '',
+    attachment_style: template.attachment_style || '',
+    core_vulnerability: template.core_vulnerability || '',
+    tone: template.tone || '',
+    quirks: template.quirks || '',
+    emoji_usage: template.emoji_usage || 'mid',
+    visual_style: template.visual_style || 'photorealistic',
+    physical_attributes: template.physical_attributes || '',
+    user_free_text: '',
+  }
+  showTemplates.value = false
+  showCreate.value = true
+  showAdvanced.value = true
+}
+
 const moodColors: Record<string, string> = {
   sweet: 'bg-pink-100 text-pink-700',
   happy: 'bg-yellow-100 text-yellow-700',
@@ -106,6 +143,12 @@ const moodColors: Record<string, string> = {
         <p class="text-sm text-gray-500 mt-1">Manage your virtual companions</p>
       </div>
       <div class="flex gap-2">
+        <button @click="fetchTemplates(); showTemplates = true" class="btn-outline text-sm">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+          </svg>
+          Templates
+        </button>
         <button @click="showImport = true" class="btn-outline text-sm">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
@@ -218,7 +261,7 @@ const moodColors: Record<string, string> = {
         leave-to-class="opacity-0"
       >
         <div v-if="showCreate" class="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4" @click.self="showCreate = false">
-          <div class="bg-white rounded-2xl shadow-modal p-6 w-full max-w-lg animate-slide-up">
+          <div class="bg-white rounded-2xl shadow-modal p-6 w-full max-w-lg max-h-[85vh] overflow-y-auto animate-slide-up">
             <h3 class="text-xl font-display font-bold text-gray-800 mb-1">Create Character</h3>
             <p class="text-sm text-gray-500 mb-5">Design your virtual companion</p>
             <form @submit.prevent="handleCreate" class="space-y-4">
@@ -386,6 +429,61 @@ const moodColors: Record<string, string> = {
             <div class="flex gap-2 justify-end mt-4">
               <button @click="showImport = false" class="btn-secondary">Cancel</button>
               <button @click="handleImport" class="btn-primary">Import</button>
+            </div>
+          </div>
+        </div>
+      </transition>
+    </Teleport>
+
+    <!-- Templates Modal -->
+    <Teleport to="body">
+      <transition
+        enter-active-class="transition duration-200 ease-out"
+        enter-from-class="opacity-0"
+        enter-to-class="opacity-100"
+        leave-active-class="transition duration-150 ease-in"
+        leave-from-class="opacity-100"
+        leave-to-class="opacity-0"
+      >
+        <div v-if="showTemplates" class="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4" @click.self="showTemplates = false">
+          <div class="bg-white rounded-2xl shadow-modal p-6 w-full max-w-2xl animate-slide-up max-h-[80vh] overflow-y-auto">
+            <h3 class="text-xl font-display font-bold text-gray-800 mb-1">Character Templates</h3>
+            <p class="text-sm text-gray-500 mb-5">Choose a preset character to get started quickly</p>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div v-for="t in templates" :key="t.name"
+                class="card p-4 cursor-pointer hover:ring-2 hover:ring-accent-300 transition-all group"
+                @click="applyTemplate(t)">
+                <div class="flex items-center gap-3 mb-3">
+                  <div class="w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0"
+                    :class="{
+                      'bg-pink-100 text-pink-600': t.mood_default === 'sweet',
+                      'bg-yellow-100 text-yellow-600': t.mood_default === 'happy',
+                      'bg-blue-100 text-blue-600': t.mood_default === 'shy',
+                      'bg-gray-100 text-gray-600': t.mood_default === 'cool',
+                      'bg-green-100 text-green-600': t.mood_default === 'gentle',
+                      'bg-orange-100 text-orange-600': t.mood_default === 'energetic',
+                    }">
+                    <span class="text-lg font-display font-bold">{{ t.name[0] }}</span>
+                  </div>
+                  <div class="flex-1 min-w-0">
+                    <h4 class="font-display font-bold text-gray-800">{{ t.name }}</h4>
+                    <span class="badge text-xs" :class="moodColors[t.mood_default] || 'bg-gray-100 text-gray-600'">
+                      {{ t.mood_default }}
+                    </span>
+                  </div>
+                </div>
+                <p class="text-sm text-gray-500 line-clamp-2 mb-2">{{ t.description }}</p>
+                <div class="flex flex-wrap gap-1.5">
+                  <span v-if="t.mbti" class="text-xs bg-purple-50 text-purple-600 px-2 py-0.5 rounded-full">{{ t.mbti }}</span>
+                  <span v-if="t.zodiac" class="text-xs bg-amber-50 text-amber-600 px-2 py-0.5 rounded-full">{{ t.zodiac }}</span>
+                  <span v-if="t.occupation" class="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">{{ t.occupation }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex justify-end mt-5">
+              <button @click="showTemplates = false" class="btn-secondary">Cancel</button>
             </div>
           </div>
         </div>

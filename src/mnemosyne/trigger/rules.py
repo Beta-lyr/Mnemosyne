@@ -1,38 +1,20 @@
-"""Trigger rule definitions and evaluation logic."""
+"""Trigger rule definitions and evaluation logic.
+
+Replaced static cron rules with an LLM-driven proactive care system.
+The LLM decides when and what to send based on full context.
+"""
 
 from dataclasses import dataclass, field
-from datetime import datetime, time, timezone
-
-
-@dataclass
-class TriggerRule:
-    name: str
-    cron_hour: int | None = None
-    cron_minute: int | None = None
-    cron_days: list[int] | None = None  # 0=Mon, 6=Sun
-    interval_hours: int | None = None
-    logic: str = ""
-    enabled: bool = True
-
-
-DEFAULT_RULES = [
-    TriggerRule(name="morning_greeting", cron_hour=8, cron_minute=30, logic="发送早安消息"),
-    TriggerRule(name="night_greeting", cron_hour=22, cron_minute=30, logic="发送晚安消息"),
-    TriggerRule(name="event_followup", cron_hour=9, cron_minute=0, logic="检查未来24h事件"),
-    TriggerRule(name="mood_followup", interval_hours=4, logic="检查负面情绪跟进"),
-    TriggerRule(
-        name="random_care",
-        cron_hour=14, cron_minute=0, cron_days=[2, 5],  # Wed, Sat
-        logic="随机关怀",
-    ),
-]
+from datetime import datetime, timezone
 
 
 @dataclass
 class TriggerContext:
-    """Context passed to the trigger engine for decision making."""
+    """Context passed to the LLM for proactive care decisions."""
     character_id: str
     character_name: str
+    character_personality: str = ""
+    mood_default: str = "sweet"
     last_interaction_time: datetime | None = None
     last_mood: str = "neutral"
     daily_messages_sent: int = 0
@@ -40,18 +22,16 @@ class TriggerContext:
     quiet_hours_start: int = 0
     quiet_hours_end: int = 7
     cooldown_minutes: int = 10
+    memories: list[str] = field(default_factory=list)
+    recent_summary: str = ""
 
 
-def should_send_trigger(ctx: TriggerContext, rule: TriggerRule) -> bool:
-    """Evaluate whether a trigger should fire based on context."""
-    if not rule.enabled:
-        return False
-
+def should_attempt_proactive(ctx: TriggerContext) -> bool:
+    """Basic guard checks before calling the LLM for a decision."""
     now = datetime.now(timezone.utc)
     current_hour = now.hour
-    current_minute = now.minute
 
-    # Quiet hours check
+    # Quiet hours — don't even ask the LLM
     if ctx.quiet_hours_start <= current_hour < ctx.quiet_hours_end:
         return False
 
@@ -59,10 +39,28 @@ def should_send_trigger(ctx: TriggerContext, rule: TriggerRule) -> bool:
     if ctx.daily_messages_sent >= ctx.max_daily_messages:
         return False
 
-    # Cooldown check
+    # Cooldown — don't ask if we just talked
     if ctx.last_interaction_time:
-        elapsed = (now - ctx.last_interaction_time).total_seconds() / 60
-        if elapsed < ctx.cooldown_minutes:
+        elapsed_min = (now - ctx.last_interaction_time).total_seconds() / 60
+        if elapsed_min < ctx.cooldown_minutes:
             return False
 
     return True
+
+
+def format_time_since(last_interaction: datetime | None) -> str:
+    """Format how long ago the last interaction was."""
+    if not last_interaction:
+        return "从未对话过"
+
+    now = datetime.now(timezone.utc)
+    delta = now - last_interaction
+    minutes = int(delta.total_seconds() / 60)
+
+    if minutes < 60:
+        return f"{minutes} 分钟前"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} 小时前"
+    days = hours // 24
+    return f"{days} 天前"

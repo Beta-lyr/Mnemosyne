@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import uuid
+from pathlib import Path
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
@@ -285,6 +286,46 @@ def _build_card_export_placeholder(req: CharacterCreate) -> dict:
     }
 
 
+@router.get("/templates")
+async def get_character_templates():
+    """Return preset character templates (no auth required)."""
+    templates_path = Path(__file__).parent.parent / "data" / "character_templates.json"
+    with open(templates_path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+@router.post("/import")
+async def import_character_card(
+    card: CharacterCard,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    ch = card.character
+    system_prompt = ch.get("system_prompt", "")
+    if not system_prompt:
+        system_prompt = DEFAULT_SYSTEM_PROMPT.format(
+            user_name="{user_name}", name=ch["name"],
+            personality=ch["personality"], memories="{memories}", mood="{mood}"
+        )
+
+    char = Character(
+        user_id=current_user.id,
+        name=ch["name"],
+        personality=ch["personality"],
+        system_prompt=system_prompt,
+        mood_default=ch.get("mood_default", "sweet"),
+        voice_style=ch.get("voice_style", {}),
+        mbti=ch.get("mbti"),
+        attachment_style=ch.get("attachment_style"),
+        tone=ch.get("tone"),
+        visual_style=ch.get("visual_style"),
+    )
+    session.add(char)
+    await session.commit()
+    await session.refresh(char)
+    return {"id": str(char.id), "name": char.name}
+
+
 @router.get("/{character_id}", response_model=CharacterResponse)
 async def get_character(
     character_id: str,
@@ -370,38 +411,6 @@ async def export_character_card(
     if format == "json":
         return card
     return yaml.dump(card, allow_unicode=True, default_flow_style=False)
-
-
-@router.post("/import")
-async def import_character_card(
-    card: CharacterCard,
-    current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    ch = card.character
-    system_prompt = ch.get("system_prompt", "")
-    if not system_prompt:
-        system_prompt = DEFAULT_SYSTEM_PROMPT.format(
-            user_name="{user_name}", name=ch["name"],
-            personality=ch["personality"], memories="{memories}", mood="{mood}"
-        )
-
-    char = Character(
-        user_id=current_user.id,
-        name=ch["name"],
-        personality=ch["personality"],
-        system_prompt=system_prompt,
-        mood_default=ch.get("mood_default", "sweet"),
-        voice_style=ch.get("voice_style", {}),
-        mbti=ch.get("mbti"),
-        attachment_style=ch.get("attachment_style"),
-        tone=ch.get("tone"),
-        visual_style=ch.get("visual_style"),
-    )
-    session.add(char)
-    await session.commit()
-    await session.refresh(char)
-    return {"id": str(char.id), "name": char.name}
 
 
 async def _get_owned_character(

@@ -86,12 +86,16 @@ async def _store_memory(
     importance: float = 0.5,
     metadata: dict | None = None,
 ):
-    """Store a single memory with embedding."""
+    """Store a single memory with embedding. Detects and resolves conflicts."""
     # Generate embedding
     try:
         embedding = await get_embedding(content)
     except Exception:
         embedding = None
+
+    # Conflict detection: check for similar existing memories
+    if embedding is not None:
+        await _detect_and_resolve_conflicts(session, character_id, content, embedding)
 
     memory = Memory(
         character_id=character_id,
@@ -102,6 +106,67 @@ async def _store_memory(
         importance=importance,
     )
     session.add(memory)
+
+
+async def _detect_and_resolve_conflicts(
+    session: AsyncSession,
+    character_id: str,
+    new_content: str,
+    new_embedding: list[float],
+):
+    """Detect if a new memory conflicts with existing ones.
+
+    If a high-similarity memory is found that contradicts the new one,
+    the old memory's importance is reduced.
+    """
+    from sqlalchemy import text as sql_text, update
+
+    embedding_str = "[" + ",".join(str(x) for x in new_embedding) + "]"
+
+    result = await session.execute(
+        sql_text("""
+            SELECT id, content, importance
+            FROM memories
+            WHERE character_id = :char_id
+              AND embedding IS NOT NULL
+            ORDER BY embedding <=> CAST(:embedding AS vector)
+            LIMIT 3
+        """),
+        {"char_id": character_id, "embedding": embedding_str},
+    )
+    rows = result.fetchall()
+
+    for row in rows:
+        old_id, old_content, old_importance = row[0], row[1], row[2]
+        if _check_contradiction(old_content, new_content):
+            # Lower old memory's importance
+            new_imp = max(0.05, old_importance * 0.3)
+            await session.execute(
+                update(Memory).where(Memory.id == old_id).values(importance=new_imp)
+            )
+
+
+def _check_contradiction(old_content: str, new_content: str) -> bool:
+    """Simple rule-based contradiction detection.
+
+    Checks if the new memory negates the old one using Chinese negation patterns.
+    """
+    negation_markers = ["不", "不再", "已经不", "没", "没有", "从不", "再也不"]
+
+    # Check if one content negates a keyword found in the other
+    old_keywords = set(old_content.split("，"))
+    new_keywords = set(new_content.split("，"))
+
+    for neg in negation_markers:
+        # If new content has "不X" and old content has "X"
+        if neg in new_content:
+            # Extract the part after negation
+            idx = new_content.find(neg)
+            after_neg = new_content[idx + len(neg):idx + len(neg) + 4]
+            if after_neg and after_neg in old_content:
+                return True
+
+    return False
 
 
 async def cleanup_old_conversations(session: AsyncSession, character_id: str, keep: int = 30):

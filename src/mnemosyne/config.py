@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     fal_key: str = ""                       # legacy: FAL key
 
     # Audio generation (unified abstraction)
-    audio_provider: str = "elevenlabs"      # elevenlabs|huggingface|openai-compatible
+    audio_provider: str = "edge-tts"        # edge-tts|elevenlabs|huggingface|openai-compatible
     audio_api_key: str = ""
     audio_base_url: str = ""
     audio_model: str = ""

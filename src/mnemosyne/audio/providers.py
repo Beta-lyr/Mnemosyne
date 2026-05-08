@@ -1,10 +1,12 @@
 """Unified audio generation provider abstraction.
 
 Supports multiple backends via .env configuration:
-  AUDIO_PROVIDER=elevenlabs|huggingface|openai-compatible
+  AUDIO_PROVIDER=edge-tts|elevenlabs|huggingface|openai-compatible
   AUDIO_API_KEY=sk-xxx
   AUDIO_BASE_URL=https://custom-api.example.com/v1  (optional)
   AUDIO_MODEL=model-name                            (optional)
+
+edge-tts is the default — free, no API key needed, good Chinese support.
 """
 
 import logging
@@ -39,6 +41,31 @@ class AudioProvider(ABC):
         else:
             key = f"audio/{filename}"
         return await storage.save(audio_bytes, key)
+
+
+# ---------------------------------------------------------------------------
+# Edge TTS (free, no API key needed)
+# ---------------------------------------------------------------------------
+class EdgeTTSProvider(AudioProvider):
+    """Microsoft Edge TTS — free, high quality, good Chinese support."""
+
+    DEFAULT_VOICE = "zh-CN-XiaoyiNeural"
+
+    async def generate(self, prompt: str, character_id: str = "", **kwargs) -> str:
+        import edge_tts
+
+        voice = kwargs.get("voice") or self.model or self.DEFAULT_VOICE
+        communicate = edge_tts.Communicate(prompt, voice)
+
+        audio_bytes = b""
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_bytes += chunk["data"]
+
+        if not audio_bytes:
+            raise RuntimeError("Edge TTS returned empty audio")
+
+        return await self._save_output(audio_bytes, "mp3", character_id)
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +169,7 @@ class OpenAICompatibleAudioProvider(AudioProvider):
 # Provider registry
 # ---------------------------------------------------------------------------
 PROVIDERS: dict[str, type[AudioProvider]] = {
+    "edge-tts": EdgeTTSProvider,
     "elevenlabs": ElevenLabsProvider,
     "huggingface": HuggingFaceAudioProvider,
     "openai-compatible": OpenAICompatibleAudioProvider,
@@ -154,7 +182,7 @@ def get_audio_provider(
     base_url: str = "",
     model: str = "",
 ) -> AudioProvider:
-    """Factory to get an audio provider by name."""
+    """Factory to get an audio provider by name. Falls back to edge-tts."""
     from mnemosyne.config import settings
 
     provider_name = provider_name or settings.audio_provider
@@ -164,6 +192,8 @@ def get_audio_provider(
 
     cls = PROVIDERS.get(provider_name)
     if not cls:
-        raise ValueError(f"Unknown audio provider: {provider_name}. Available: {list(PROVIDERS.keys())}")
+        # Fallback to edge-tts (free, no API key needed)
+        logger.info("Unknown or empty audio provider '%s', falling back to edge-tts", provider_name)
+        cls = EdgeTTSProvider
 
     return cls(api_key=api_key, base_url=base_url, model=model)

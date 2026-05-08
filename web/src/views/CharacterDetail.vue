@@ -117,14 +117,6 @@ async function handleExport(format: string) {
   URL.revokeObjectURL(url)
 }
 
-const moodColors: Record<string, string> = {
-  sweet: 'bg-pink-100 text-pink-700',
-  happy: 'bg-yellow-100 text-yellow-700',
-  shy: 'bg-blue-100 text-blue-700',
-  cool: 'bg-gray-100 text-gray-700',
-  gentle: 'bg-green-100 text-green-700',
-  energetic: 'bg-orange-100 text-orange-700',
-}
 </script>
 
 <template>

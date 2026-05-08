@@ -155,7 +155,7 @@ async def send_message_rest(
 
 @router.websocket("/{character_id}/ws")
 async def chat_websocket(websocket: WebSocket, character_id: str):
-    """WebSocket endpoint for real-time chat."""
+    """WebSocket endpoint for real-time chat with streaming."""
     await websocket.accept()
     from mnemosyne.db.session import async_session
 
@@ -171,10 +171,12 @@ async def chat_websocket(websocket: WebSocket, character_id: str):
                 session.add(user_msg)
                 await session.commit()
 
-                # Mood-based delay
+                # Mood-based delay — send typing signal first
                 result = await session.execute(select(Character).where(Character.id == character_id))
                 character = result.scalar_one_or_none()
                 delay = await emotion_manager.get_reply_delay(character_id, character.mood_default if character else "sweet")
+
+                await websocket.send_text(json.dumps({"type": "typing"}))
                 await asyncio.sleep(delay)
 
                 # Check read-not-reply
@@ -183,12 +185,20 @@ async def chat_websocket(websocket: WebSocket, character_id: str):
                     await websocket.send_text(json.dumps({"type": "read_receipt"}))
                     continue
 
-                # Generate response (text only)
-                response_text, pending_media = await dialog_engine.process_message(
+                # Stream response
+                response_text = ""
+                pending_media: dict = {}
+
+                async for chunk in dialog_engine.stream_message(
                     character_id=character_id,
                     user_message=content,
                     session=session,
-                )
+                ):
+                    if chunk["type"] == "chunk":
+                        await websocket.send_text(json.dumps({"type": "chunk", "content": chunk["content"]}))
+                    elif chunk["type"] == "done":
+                        response_text = chunk["text"]
+                        pending_media = chunk["pending_media"]
 
                 # Save assistant response
                 has_pending = bool(pending_media)
@@ -205,11 +215,11 @@ async def chat_websocket(websocket: WebSocket, character_id: str):
 
             msg_id = str(assistant_msg.id)
 
-            # Send text reply immediately
+            # Send done signal
             await websocket.send_text(
                 json.dumps({
+                    "type": "done",
                     "id": msg_id,
-                    "role": "assistant",
                     "content": response_text,
                     "image_url": None,
                     "audio_url": None,
@@ -306,6 +316,168 @@ async def delete_media(
         await session.commit()
 
     return {"ok": True}
+
+
+@router.get("/{character_id}/export")
+async def export_chat(
+    character_id: str,
+    format: str = "txt",
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Export chat history as txt or json."""
+    await _verify_character_access(character_id, current_user, session)
+
+    result = await session.execute(
+        select(Character).where(Character.id == character_id)
+    )
+    character = result.scalar_one_or_none()
+    char_name = character.name if character else "Assistant"
+
+    result = await session.execute(
+        select(Conversation)
+        .where(Conversation.character_id == character_id)
+        .order_by(Conversation.created_at.asc())
+    )
+    messages = result.scalars().all()
+
+    if format == "json":
+        import json as json_mod
+        data = [
+            {
+                "role": m.role,
+                "content": m.content,
+                "image_url": m.image_url,
+                "audio_url": m.audio_url,
+                "video_url": m.video_url,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m in messages
+        ]
+        from fastapi.responses import StreamingResponse
+        import io
+        content = json_mod.dumps(data, ensure_ascii=False, indent=2)
+        return StreamingResponse(
+            io.BytesIO(content.encode("utf-8")),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="chat_{char_name}.json"'},
+        )
+    else:
+        lines = []
+        for m in messages:
+            ts = m.created_at.strftime("%Y-%m-%d %H:%M") if m.created_at else "??:??"
+            role = "User" if m.role == "user" else char_name
+            lines.append(f"[{ts}] {role}: {m.content}")
+        from fastapi.responses import StreamingResponse
+        import io
+        content = "\n".join(lines)
+        return StreamingResponse(
+            io.BytesIO(content.encode("utf-8")),
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="chat_{char_name}.txt"'},
+        )
+
+
+@router.get("/{character_id}/emotion")
+async def get_emotion(
+    character_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get current emotion state for a character."""
+    await _verify_character_access(character_id, current_user, session)
+
+    result = await session.execute(select(Character).where(Character.id == character_id))
+    character = result.scalar_one_or_none()
+    default_mood = character.mood_default if character else "sweet"
+
+    emotion_data = await emotion_manager.get_emotion(character_id, default_mood)
+    emotion = emotion_data if isinstance(emotion_data, str) else emotion_data.get("emotion", default_mood)
+    intensity = emotion_data.get("intensity", 0.5) if isinstance(emotion_data, dict) else 0.5
+
+    from mnemosyne.emotion.state import REPLY_DELAYS, SILENCE_PROBABILITIES, NEGATIVE_EMOTIONS
+    delay_range = REPLY_DELAYS.get(emotion, REPLY_DELAYS.get(default_mood, (1.0, 3.0)))
+    silence_prob = SILENCE_PROBABILITIES.get(emotion, 0.0) if emotion in NEGATIVE_EMOTIONS else 0.0
+
+    return {
+        "emotion": emotion,
+        "intensity": intensity,
+        "reply_delay_min": delay_range[0],
+        "reply_delay_max": delay_range[1],
+        "silence_probability": silence_prob,
+        "is_negative": emotion in NEGATIVE_EMOTIONS,
+    }
+
+
+@router.get("/{character_id}/analytics")
+async def get_analytics(
+    character_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get analytics data for a character."""
+    await _verify_character_access(character_id, current_user, session)
+    from sqlalchemy import func
+    from datetime import timedelta
+
+    # Total messages
+    total_result = await session.execute(
+        select(func.count()).select_from(Conversation).where(Conversation.character_id == character_id)
+    )
+    total_messages = total_result.scalar() or 0
+
+    # Messages by day (last 30 days)
+    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+    daily_result = await session.execute(
+        select(
+            func.date(Conversation.created_at).label("date"),
+            func.count().label("count"),
+        )
+        .where(Conversation.character_id == character_id)
+        .where(Conversation.created_at >= thirty_days_ago)
+        .group_by(func.date(Conversation.created_at))
+        .order_by(func.date(Conversation.created_at))
+    )
+    messages_by_day = [{"date": str(r.date), "count": r.count} for r in daily_result.all()]
+
+    # Memory stats
+    from mnemosyne.db.models import Memory
+    memory_total = await session.execute(
+        select(func.count()).select_from(Memory).where(Memory.character_id == character_id)
+    )
+    memory_by_type = await session.execute(
+        select(Memory.type, func.count().label("count"), func.avg(Memory.importance).label("avg_imp"))
+        .where(Memory.character_id == character_id)
+        .group_by(Memory.type)
+    )
+    memory_stats = {
+        "total": memory_total.scalar() or 0,
+        "by_type": {r.type: {"count": r.count, "avg_importance": round(float(r.avg_imp or 0), 2)} for r in memory_by_type.all()},
+    }
+
+    # Media stats
+    media_result = await session.execute(
+        select(
+            func.count().filter(Conversation.image_url.isnot(None)).label("images"),
+            func.count().filter(Conversation.audio_url.isnot(None)).label("audio"),
+            func.count().filter(Conversation.video_url.isnot(None)).label("video"),
+        )
+        .where(Conversation.character_id == character_id)
+        .where(Conversation.role == "assistant")
+    )
+    media_row = media_result.one()
+    media_stats = {
+        "images": media_row.images,
+        "audio": media_row.audio,
+        "video": media_row.video,
+    }
+
+    return {
+        "total_messages": total_messages,
+        "messages_by_day": messages_by_day,
+        "memory_stats": memory_stats,
+        "media_stats": media_stats,
+    }
 
 
 def _clear_media_from_message(m: Conversation, media_type: str):

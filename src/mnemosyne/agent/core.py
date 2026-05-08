@@ -96,6 +96,9 @@ class DialogEngine:
                 response = "给你看个视频~"
             pending_media["video"] = video_prompt
 
+        if "[MEMORY_SAVED]" in response:
+            response = response.split("[MEMORY_SAVED]")[0].strip()
+
         if "[SCHEDULE_MESSAGE]" in response:
             schedule_str = response.split("[SCHEDULE_MESSAGE]")[1].strip()
             response = response.split("[SCHEDULE_MESSAGE]")[0].strip()
@@ -112,10 +115,172 @@ class DialogEngine:
             except Exception as e:
                 logging.getLogger(__name__).error("Failed to schedule message: %s", e)
 
-        # 8. Update emotion
-        await self.emotion_manager.update_from_conversation(character_id, user_message, response)
+        # 8. Update emotion (with memories for memory-triggered emotions)
+        memories_for_emotion = await self.memory_retriever.retrieve(character_id, user_message, top_k=3)
+        await self.emotion_manager.update_from_conversation(character_id, user_message, response, memories_for_emotion)
 
         return response, pending_media
+
+    async def stream_message(
+        self,
+        character_id: str,
+        user_message: str,
+        session: AsyncSession,
+    ):
+        """Stream LLM response token by token.
+
+        Yields dicts:
+          {"type": "chunk", "content": "..."}   — each text fragment
+          {"type": "done", "text": "...", "pending_media": {...}}  — final
+        """
+        logger = logging.getLogger(__name__)
+
+        # 1-4: Same setup as process_message
+        result = await session.execute(select(Character).where(Character.id == character_id))
+        character = result.scalar_one_or_none()
+        if not character:
+            yield {"type": "done", "text": "Error: character not found", "pending_media": {}}
+            return
+
+        memories_text = await self._get_memories_text(character_id, user_message)
+        mood = await self.emotion_manager.get_emotion(character_id, character.mood_default)
+
+        full_personality = build_full_personality(
+            character.personality,
+            character.processed_personality,
+            character.interaction_rules,
+        )
+        system_prompt = character.system_prompt.format(
+            user_name="用户",
+            name=character.name,
+            personality=full_personality,
+            memories=memories_text,
+            mood=mood,
+        )
+
+        history = await self._get_conversation_history(session, character_id, limit=20)
+        messages = [{"role": "system", "content": system_prompt}] + history
+        messages.append({"role": "user", "content": user_message})
+
+        # 5. Stream LLM call
+        full_content = ""
+        tool_calls_data = []
+        try:
+            response = await litellm.acompletion(
+                model=f"{settings.llm_provider}/{settings.llm_model}",
+                messages=messages,
+                api_key=settings.llm_api_key,
+                api_base=settings.llm_base_url or None,
+                tools=[self._format_tool_schema(t) for t in TOOLS],
+                max_tokens=1024,
+                temperature=0.8,
+                stream=True,
+            )
+            async for chunk in response:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if not delta:
+                    continue
+                # Handle tool calls in stream
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        # Accumulate tool call data
+                        while len(tool_calls_data) <= (tc.index or 0):
+                            tool_calls_data.append({"name": "", "arguments": ""})
+                        idx = tc.index or 0
+                        if tc.function and tc.function.name:
+                            tool_calls_data[idx]["name"] = tc.function.name
+                        if tc.function and tc.function.arguments:
+                            tool_calls_data[idx]["arguments"] += tc.function.arguments
+                # Handle text content
+                if delta.content:
+                    full_content += delta.content
+                    yield {"type": "chunk", "content": delta.content}
+
+        except Exception as e:
+            logger.error("LLM stream failed: %s - %s", type(e).__name__, e)
+            error_text = f"抱歉，我现在有点不舒服，稍后再聊好吗？({type(e).__name__}: {e})"
+            yield {"type": "done", "text": error_text, "pending_media": {}}
+            return
+
+        # 6. Process tool calls (same as non-streaming)
+        if tool_calls_data:
+            tool_results = []
+            for tc in tool_calls_data:
+                func_name = tc["name"]
+                try:
+                    args = json.loads(tc["arguments"]) if tc["arguments"] else {}
+                except json.JSONDecodeError:
+                    args = {}
+                logger.info("Tool call (stream): %s(%s)", func_name, args)
+                if func_name == "generate_image":
+                    tool_results.append(f"[IMAGE_GENERATION_REQUESTED]{args.get('scene_prompt', '')}")
+                elif func_name == "save_memory":
+                    tool_results.append(f"[MEMORY_SAVED]{args.get('memory_type', 'fact')}:{args.get('content', '')}")
+                elif func_name == "schedule_message":
+                    tool_results.append(f"[SCHEDULE_MESSAGE]{json.dumps({'delay': args.get('delay_minutes', 1), 'message': args.get('message', '')}, ensure_ascii=False)}")
+                elif func_name == "generate_audio":
+                    tool_results.append(f"[AUDIO_GENERATION_REQUESTED]{args.get('audio_prompt', '')}")
+                elif func_name == "generate_video":
+                    tool_results.append(f"[VIDEO_GENERATION_REQUESTED]{args.get('video_prompt', '')}")
+            if tool_results:
+                full_content = " ".join(tool_results)
+
+        # 7. Fallback: force image if user asked for photo
+        photo_keywords = ["照片", "自拍", "拍照", "photo", "selfie", "picture", "pic"]
+        if not tool_calls_data and any(kw in user_message.lower() for kw in photo_keywords):
+            if "[IMAGE_GENERATION_REQUESTED]" not in full_content:
+                logger.info("LLM didn't call image tool in stream, forcing IMAGE_GENERATION_REQUESTED.")
+                full_content += " [IMAGE_GENERATION_REQUESTED] portrait, smiling gently, warm lighting"
+
+        # 8. Parse tool markers from content
+        pending_media: dict = {}
+        response_text = full_content
+
+        if "[IMAGE_GENERATION_REQUESTED]" in response_text:
+            scene = response_text.split("[IMAGE_GENERATION_REQUESTED]")[1].strip()
+            response_text = response_text.split("[IMAGE_GENERATION_REQUESTED]")[0].strip()
+            if not response_text:
+                response_text = "给你看一张我的照片~"
+            pending_media["image"] = scene
+
+        if "[AUDIO_GENERATION_REQUESTED]" in response_text:
+            audio_prompt = response_text.split("[AUDIO_GENERATION_REQUESTED]")[1].strip()
+            response_text = response_text.split("[AUDIO_GENERATION_REQUESTED]")[0].strip()
+            if not response_text:
+                response_text = "给你听听~"
+            pending_media["audio"] = audio_prompt
+
+        if "[VIDEO_GENERATION_REQUESTED]" in response_text:
+            video_prompt = response_text.split("[VIDEO_GENERATION_REQUESTED]")[1].strip()
+            response_text = response_text.split("[VIDEO_GENERATION_REQUESTED]")[0].strip()
+            if not response_text:
+                response_text = "给你看个视频~"
+            pending_media["video"] = video_prompt
+
+        if "[MEMORY_SAVED]" in response_text:
+            response_text = response_text.split("[MEMORY_SAVED]")[0].strip()
+
+        if "[SCHEDULE_MESSAGE]" in response_text:
+            schedule_str = response_text.split("[SCHEDULE_MESSAGE]")[1].strip()
+            response_text = response_text.split("[SCHEDULE_MESSAGE]")[0].strip()
+            try:
+                info = json.loads(schedule_str)
+                from mnemosyne.trigger.scheduler import get_scheduler
+                scheduler = get_scheduler()
+                if scheduler:
+                    scheduler.add_dynamic_job(character_id, info["message"], info["delay"])
+                    confirm = f"好的，我会在{info['delay']}分钟后提醒你~"
+                    response_text = f"{response_text} {confirm}" if response_text else confirm
+                else:
+                    response_text = response_text or "抱歉，定时功能暂时不可用~"
+            except Exception as e:
+                logger.error("Failed to schedule message: %s", e)
+
+        # 9. Update emotion (with memories)
+        memories_for_emotion = await self.memory_retriever.retrieve(character_id, user_message, top_k=3)
+        await self.emotion_manager.update_from_conversation(character_id, user_message, response_text, memories_for_emotion)
+
+        yield {"type": "done", "text": response_text, "pending_media": pending_media}
 
     async def generate_media_background(
         self,

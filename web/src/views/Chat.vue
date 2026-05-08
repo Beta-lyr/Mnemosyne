@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useChatStore } from '../stores/chat'
 import { useCharacterStore } from '../stores/characters'
 import type { Character } from '../stores/characters'
 import type { ChatMessage } from '../stores/chat'
 import CacheDialog from './CacheDialog.vue'
+import ImageLightbox from '../components/ImageLightbox.vue'
+import MarkdownRenderer from '../components/MarkdownRenderer.vue'
+import VoiceBar from '../components/VoiceBar.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -16,13 +19,16 @@ const character = ref<Character | null>(null)
 const inputText = ref('')
 const messagesContainer = ref<HTMLDivElement | null>(null)
 const waitingForResponse = ref(false)
+const serverTyping = ref(false)
 const showReadReceipt = ref(false)
 const showCacheDialog = ref(false)
 const characterId = ref('')
+const lightboxSrc = ref<string | null>(null)
+const showExportMenu = ref(false)
 
-const isTyping = computed(() => waitingForResponse.value || chatStore.loading)
+const isTyping = computed(() => waitingForResponse.value || serverTyping.value || chatStore.loading)
 
-// Time divider logic: insert dividers between messages ≥5min apart
+// Time divider logic
 interface DisplayItem {
   type: 'divider' | 'message'
   time?: string
@@ -87,6 +93,14 @@ async function handleScroll() {
   }
 }
 
+// Auto-scroll when streaming content updates
+watch(() => chatStore.streamingContent, () => {
+  scrollToBottom(true)
+})
+
+// Server typing timeout
+let typingTimeout: ReturnType<typeof setTimeout> | null = null
+
 onMounted(async () => {
   characterId.value = route.params.id as string
   if (charStore.characters.length === 0) await charStore.fetchCharacters()
@@ -104,17 +118,38 @@ onMounted(async () => {
     if (msg.type === 'read_receipt') {
       showReadReceipt.value = true
       waitingForResponse.value = false
+      serverTyping.value = false
+      if (typingTimeout) clearTimeout(typingTimeout)
       setTimeout(() => { showReadReceipt.value = false }, 5000)
+      return
+    }
+    if (msg.type === 'typing') {
+      serverTyping.value = true
+      if (typingTimeout) clearTimeout(typingTimeout)
+      typingTimeout = setTimeout(() => { serverTyping.value = false }, 30000)
       return
     }
     showReadReceipt.value = false
     waitingForResponse.value = false
+    serverTyping.value = false
+    if (typingTimeout) clearTimeout(typingTimeout)
     scrollToBottom(true)
   })
+
+  // Listen for viewport resize (mobile keyboard)
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', () => {
+      scrollToBottom()
+    })
+  }
 })
 
 onUnmounted(() => {
   chatStore.disconnectWebSocket()
+  if (typingTimeout) clearTimeout(typingTimeout)
+  if (window.visualViewport) {
+    window.visualViewport.removeEventListener('resize', () => {})
+  }
 })
 
 async function handleSend() {
@@ -143,13 +178,47 @@ function handleKeydown(e: KeyboardEvent) {
 function isMediaCleared(msg: ChatMessage): boolean {
   return msg.media_status === 'cleared'
 }
+
+function openLightbox(src: string) {
+  lightboxSrc.value = src
+}
+
+function handleRetry(index: number) {
+  chatStore.retryMessage(characterId.value, index)
+}
+
+function exportChat(format: 'txt' | 'json') {
+  showExportMenu.value = false
+  const url = `/api/chat/${characterId.value}/export?format=${format}`
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `chat_${character.value?.name || 'export'}.${format}`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+}
+
+// Close export menu on outside click
+function handleDocumentClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (!target.closest('.export-menu-container')) {
+    showExportMenu.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleDocumentClick)
+})
+onUnmounted(() => {
+  document.removeEventListener('click', handleDocumentClick)
+})
 </script>
 
 <template>
-  <div class="flex flex-col h-[calc(100vh-7rem)] animate-fade-in">
+  <div class="flex flex-col h-[calc(100vh-7rem)] animate-fade-in max-md:h-[calc(100vh-4rem)]">
 
     <!-- Chat Header -->
-    <div class="flex items-center gap-3 mb-4 pb-4 border-b border-gray-100">
+    <div class="flex items-center gap-3 mb-4 pb-4 border-b border-gray-100 flex-shrink-0">
       <button
         @click="router.push('/')"
         class="btn-ghost p-2 rounded-xl"
@@ -173,14 +242,60 @@ function isMediaCleared(msg: ChatMessage): boolean {
       </div>
 
       <div class="flex-1 min-w-0">
-        <h2 class="font-display font-bold text-lg leading-tight truncate">
-          {{ character?.name }}
-        </h2>
+        <div class="flex items-center gap-2">
+          <h2 class="font-display font-bold text-lg leading-tight truncate max-md:text-base">
+            {{ character?.name }}
+          </h2>
+          <!-- Connection status dot -->
+          <span
+            class="w-2 h-2 rounded-full flex-shrink-0"
+            :class="{
+              'bg-green-400': chatStore.connectionStatus === 'connected',
+              'bg-yellow-400 animate-pulse': chatStore.connectionStatus === 'reconnecting',
+              'bg-red-400': chatStore.connectionStatus === 'disconnected',
+            }"
+            :title="chatStore.connectionStatus"
+          />
+        </div>
         <span class="badge badge-primary text-[10px] mt-0.5">
           {{ character?.mood_default || 'Neutral' }}
         </span>
       </div>
 
+      <!-- Export button -->
+      <div class="relative export-menu-container">
+        <button
+          @click.stop="showExportMenu = !showExportMenu"
+          class="btn-ghost p-2 rounded-xl"
+          aria-label="Export"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+        </button>
+        <transition name="menu">
+          <div v-if="showExportMenu" class="absolute right-0 top-full mt-1 bg-white rounded-xl shadow-modal border border-gray-100 py-1 z-50 min-w-[120px]">
+            <button @click="exportChat('txt')" class="w-full px-4 py-2 text-sm text-left hover:bg-gray-50 transition-colors">
+              Export .txt
+            </button>
+            <button @click="exportChat('json')" class="w-full px-4 py-2 text-sm text-left hover:bg-gray-50 transition-colors">
+              Export .json
+            </button>
+          </div>
+        </transition>
+      </div>
+
+      <button
+        @click="router.push(`/analytics/${characterId}`)"
+        class="btn-ghost p-2 rounded-xl max-md:hidden"
+        aria-label="Analytics"
+      >
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+        </svg>
+      </button>
       <button
         @click="showCacheDialog = true"
         class="btn-ghost p-2 rounded-xl"
@@ -204,11 +319,24 @@ function isMediaCleared(msg: ChatMessage): boolean {
       </button>
     </div>
 
+    <!-- Connection banner -->
+    <div
+      v-if="chatStore.connectionStatus === 'reconnecting'"
+      class="flex items-center justify-center gap-2 py-2 px-4 bg-yellow-50 text-yellow-700 text-sm rounded-xl mb-3 animate-fade-in"
+    >
+      <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+      </svg>
+      Connection lost, reconnecting...
+    </div>
+
     <!-- Messages Area -->
     <div
       ref="messagesContainer"
       class="flex-1 overflow-y-auto px-1 pb-4 space-y-3"
       @scroll="handleScroll"
+      style="-webkit-overflow-scrolling: touch;"
     >
       <!-- Loading older messages indicator -->
       <div v-if="chatStore.loadingOlder" class="flex justify-center py-3">
@@ -228,7 +356,7 @@ function isMediaCleared(msg: ChatMessage): boolean {
 
       <!-- Empty State -->
       <div
-        v-if="chatStore.messages.length === 0 && !isTyping && !chatStore.loadingOlder"
+        v-if="chatStore.messages.length === 0 && !isTyping && !chatStore.loadingOlder && !chatStore.streamingContent"
         class="flex flex-col items-center justify-center h-full text-center py-16"
       >
         <div class="w-20 h-20 rounded-full bg-primary-50 flex items-center justify-center mb-4">
@@ -261,7 +389,7 @@ function isMediaCleared(msg: ChatMessage): boolean {
           class="animate-slide-up"
         >
           <!-- Assistant avatar -->
-          <div v-if="item.message.role !== 'user'" class="flex items-end gap-2 max-w-[75%]">
+          <div v-if="item.message.role !== 'user'" class="flex items-start gap-2 max-w-[85%] md:max-w-[75%]">
             <div class="w-7 h-7 rounded-full overflow-hidden bg-primary-100 flex-shrink-0 flex items-center justify-center">
               <img
                 v-if="character?.base_image_url"
@@ -275,11 +403,34 @@ function isMediaCleared(msg: ChatMessage): boolean {
             </div>
             <div>
               <div class="bg-gray-100 text-gray-800 rounded-2xl rounded-bl-sm px-4 py-2.5 shadow-bubble">
-                <p class="whitespace-pre-wrap text-sm leading-relaxed font-sans">{{ item.message.content }}</p>
+                <!-- Markdown content for assistant -->
+                <MarkdownRenderer
+                  v-if="item.message.content"
+                  :content="item.message.content"
+                />
+                <p v-else class="whitespace-pre-wrap text-sm leading-relaxed font-sans text-gray-400 italic">Empty response</p>
+
+                <!-- Retry button for error messages -->
+                <button
+                  v-if="item.message.error"
+                  @click="handleRetry(i)"
+                  class="mt-2 flex items-center gap-1.5 text-xs text-red-500 hover:text-red-600 transition-colors"
+                >
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Retry
+                </button>
 
                 <!-- Image: show or placeholder -->
                 <template v-if="item.message.image_url && !isMediaCleared(item.message)">
-                  <img :src="item.message.image_url" class="mt-2 rounded-lg max-w-[240px] w-full object-cover" alt="Image" />
+                  <img
+                    :src="item.message.image_url"
+                    class="mt-2 rounded-lg max-w-[240px] w-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
+                    alt="Image"
+                    @click="openLightbox(item.message.image_url!)"
+                  />
                 </template>
                 <div v-else-if="item.message.media_status === 'cleared' && item.message.image_url === null"
                   class="mt-2 w-[240px] h-[160px] bg-gray-100 rounded-lg flex flex-col items-center justify-center text-gray-400">
@@ -301,7 +452,7 @@ function isMediaCleared(msg: ChatMessage): boolean {
 
                 <!-- Audio -->
                 <template v-if="item.message.audio_url && !isMediaCleared(item.message)">
-                  <audio :src="item.message.audio_url" controls class="mt-2 w-full max-w-[240px]"></audio>
+                  <VoiceBar :src="item.message.audio_url" class="mt-2" />
                 </template>
                 <div v-else-if="item.message.media_status === 'cleared' && item.message.audio_url === null"
                   class="mt-2 w-[240px] h-[40px] bg-gray-100 rounded-lg flex items-center justify-center gap-2 text-gray-400">
@@ -341,35 +492,59 @@ function isMediaCleared(msg: ChatMessage): boolean {
                   </div>
                 </div>
               </div>
-
-              <!-- Read receipt under last user message -->
-              <div v-if="showReadReceipt && i === displayItems.length - 1 && item.message.role === 'user'"
-                class="text-right mt-1">
-                <span class="text-xs text-gray-400">Read</span>
-              </div>
             </div>
           </div>
 
           <!-- User message -->
-          <div v-else class="max-w-[75%]">
+          <div v-else class="max-w-[85%] md:max-w-[75%]">
             <div class="bg-primary text-white rounded-2xl rounded-br-sm px-4 py-2.5 shadow-bubble">
               <p class="whitespace-pre-wrap text-sm leading-relaxed font-sans">{{ item.message.content }}</p>
               <template v-if="item.message.image_url && !isMediaCleared(item.message)">
-                <img :src="item.message.image_url" class="mt-2 rounded-lg max-w-[240px] w-full object-cover" alt="Image" />
+                <img
+                  :src="item.message.image_url"
+                  class="mt-2 rounded-lg max-w-[240px] w-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
+                  alt="Image"
+                  @click="openLightbox(item.message.image_url!)"
+                />
               </template>
               <template v-if="item.message.audio_url && !isMediaCleared(item.message)">
-                <audio :src="item.message.audio_url" controls class="mt-2 w-full max-w-[240px]"></audio>
+                <VoiceBar :src="item.message.audio_url" is-user class="mt-2" />
               </template>
               <template v-if="item.message.video_url && !isMediaCleared(item.message)">
                 <video :src="item.message.video_url" controls class="mt-2 rounded-lg max-w-[240px] w-full"></video>
               </template>
             </div>
+            <!-- Read receipt under last user message -->
+            <div v-if="showReadReceipt && i === displayItems.length - 1" class="text-right mt-1">
+              <span class="text-xs text-gray-400">Read</span>
+            </div>
           </div>
         </div>
       </template>
 
+      <!-- Streaming message (in-progress) -->
+      <div v-if="chatStore.streamingContent" class="flex justify-start animate-slide-up">
+        <div class="flex items-start gap-2 max-w-[85%] md:max-w-[75%]">
+          <div class="w-7 h-7 rounded-full overflow-hidden bg-primary-100 flex-shrink-0 flex items-center justify-center">
+            <img
+              v-if="character?.base_image_url"
+              :src="character.base_image_url"
+              :alt="character?.name"
+              class="w-full h-full object-cover"
+            />
+            <span v-else class="text-primary font-bold text-[10px]">
+              {{ character?.name?.[0]?.toUpperCase() }}
+            </span>
+          </div>
+          <div class="bg-gray-100 text-gray-800 rounded-2xl rounded-bl-sm px-4 py-2.5 shadow-bubble">
+            <MarkdownRenderer :content="chatStore.streamingContent" />
+            <span class="inline-block w-0.5 h-4 bg-gray-400 animate-pulse ml-0.5 align-text-bottom"></span>
+          </div>
+        </div>
+      </div>
+
       <!-- Typing Indicator -->
-      <div v-if="isTyping && !showReadReceipt" class="flex items-end gap-2 animate-slide-up">
+      <div v-if="isTyping && !showReadReceipt && !chatStore.streamingContent" class="flex items-start gap-2 animate-slide-up">
         <div class="w-7 h-7 rounded-full overflow-hidden bg-primary-100 flex-shrink-0 flex items-center justify-center">
           <img
             v-if="character?.base_image_url"
@@ -392,17 +567,18 @@ function isMediaCleared(msg: ChatMessage): boolean {
     </div>
 
     <!-- Input Area -->
-    <div class="flex items-end gap-2 pt-3 border-t border-gray-100">
+    <div class="flex items-end gap-2 pt-3 border-t border-gray-100 flex-shrink-0 pb-[env(safe-area-inset-bottom)]">
       <textarea
         v-model="inputText"
         @keydown="handleKeydown"
         rows="1"
-        placeholder="Type a message..."
-        class="input flex-1 resize-none min-h-[44px] max-h-[120px] py-3"
+        :placeholder="chatStore.connectionStatus === 'disconnected' ? 'Disconnected...' : 'Type a message...'"
+        :disabled="chatStore.connectionStatus === 'disconnected'"
+        class="input flex-1 resize-none min-h-[44px] max-h-[120px] py-3 disabled:opacity-50"
       ></textarea>
       <button
         @click="handleSend"
-        :disabled="!inputText.trim() || isTyping"
+        :disabled="!inputText.trim() || isTyping || chatStore.connectionStatus === 'disconnected'"
         class="btn-primary p-3 rounded-xl flex-shrink-0"
         aria-label="Send message"
       >
@@ -422,5 +598,23 @@ function isMediaCleared(msg: ChatMessage): boolean {
       @cleared="showCacheDialog = false"
     />
 
+    <!-- Image Lightbox -->
+    <ImageLightbox
+      v-if="lightboxSrc"
+      :src="lightboxSrc"
+      @close="lightboxSrc = null"
+    />
   </div>
 </template>
+
+<style scoped>
+.menu-enter-active,
+.menu-leave-active {
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.menu-enter-from,
+.menu-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+</style>

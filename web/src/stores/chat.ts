@@ -11,6 +11,7 @@ export interface ChatMessage {
   video_url?: string | null
   media_status?: string | null
   created_at?: string | null
+  error?: boolean
 }
 
 export const useChatStore = defineStore('chat', () => {
@@ -19,6 +20,15 @@ export const useChatStore = defineStore('chat', () => {
   const loadingOlder = ref(false)
   const hasMore = ref(true)
   const ws = ref<WebSocket | null>(null)
+  const connectionStatus = ref<'connected' | 'reconnecting' | 'disconnected'>('disconnected')
+  const streamingContent = ref('')
+
+  // Reconnect state
+  let reconnectAttempts = 0
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  const MAX_RECONNECT_ATTEMPTS = 5
+  let storedCharacterId = ''
+  let storedOnMessage: ((msg: any) => void) | null = null
 
   async function fetchHistory(characterId: string) {
     const { data } = await axios.get(`/api/chat/${characterId}/history`, { params: { limit: 30 } })
@@ -48,17 +58,47 @@ export const useChatStore = defineStore('chat', () => {
       const { data } = await axios.post(`/api/chat/${characterId}/message`, { content })
       messages.value.push(data)
       return data
+    } catch (e) {
+      // Mark the last user message as failed
+      const lastMsg = messages.value[messages.value.length - 1]
+      if (lastMsg?.role === 'user') {
+        // Add an empty assistant message with error flag for retry
+        messages.value.push({ role: 'assistant', content: '', error: true })
+      }
+      throw e
     } finally {
       loading.value = false
     }
   }
 
-  function connectWebSocket(characterId: string, onMessage: (msg: any) => void) {
+  function _scheduleReconnect() {
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      connectionStatus.value = 'disconnected'
+      return
+    }
+    connectionStatus.value = 'reconnecting'
+    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 16000)
+    reconnectTimer = setTimeout(() => {
+      reconnectAttempts++
+      if (storedCharacterId && storedOnMessage) {
+        _doConnect(storedCharacterId, storedOnMessage)
+      }
+    }, delay)
+  }
+
+  function _doConnect(characterId: string, onMessage: (msg: any) => void) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${protocol}//${window.location.host}/api/chat/${characterId}/ws`
-    ws.value = new WebSocket(wsUrl)
+    connectionStatus.value = 'reconnecting'
+    const socket = new WebSocket(wsUrl)
+    ws.value = socket
 
-    ws.value.onmessage = (event) => {
+    socket.onopen = () => {
+      reconnectAttempts = 0
+      connectionStatus.value = 'connected'
+    }
+
+    socket.onmessage = (event) => {
       const data = JSON.parse(event.data)
       if (data.type === 'media_update') {
         const msg = messages.value.find(m => m.id === data.message_id)
@@ -70,15 +110,49 @@ export const useChatStore = defineStore('chat', () => {
         }
       } else if (data.type === 'read_receipt') {
         onMessage({ type: 'read_receipt' })
+      } else if (data.type === 'chunk') {
+        streamingContent.value += data.content
+      } else if (data.type === 'typing') {
+        onMessage({ type: 'typing' })
+      } else if (data.type === 'done') {
+        // Streaming complete - create the final message
+        const finalMsg: ChatMessage = {
+          id: data.id,
+          role: 'assistant',
+          content: streamingContent.value || data.content || '',
+          image_url: data.image_url || null,
+          audio_url: data.audio_url || null,
+          video_url: data.video_url || null,
+          media_status: data.media_status || null,
+          created_at: data.created_at || new Date().toISOString(),
+        }
+        messages.value.push(finalMsg)
+        streamingContent.value = ''
+        onMessage(finalMsg)
       } else {
         messages.value.push(data as ChatMessage)
         onMessage(data)
       }
     }
 
-    ws.value.onclose = () => {
+    socket.onclose = () => {
       ws.value = null
+      if (connectionStatus.value === 'connected' || connectionStatus.value === 'reconnecting') {
+        // Unexpected close - attempt reconnect
+        _scheduleReconnect()
+      }
     }
+
+    socket.onerror = () => {
+      // onerror is always followed by onclose, so reconnect is handled there
+    }
+  }
+
+  function connectWebSocket(characterId: string, onMessage: (msg: any) => void) {
+    storedCharacterId = characterId
+    storedOnMessage = onMessage
+    reconnectAttempts = 0
+    _doConnect(characterId, onMessage)
   }
 
   function sendViaWebSocket(content: string) {
@@ -88,7 +162,36 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function retryMessage(characterId: string, index: number) {
+    // Find the user message before the failed assistant message
+    let userMsgContent = ''
+    for (let i = index - 1; i >= 0; i--) {
+      if (messages.value[i].role === 'user') {
+        userMsgContent = messages.value[i].content
+        break
+      }
+    }
+    if (!userMsgContent) return
+
+    // Remove the error assistant message
+    messages.value.splice(index, 1)
+
+    // Resend
+    if (ws.value && ws.value.readyState === WebSocket.OPEN) {
+      ws.value.send(JSON.stringify({ content: userMsgContent }))
+    } else {
+      sendMessage(characterId, userMsgContent)
+    }
+  }
+
   function disconnectWebSocket() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+    connectionStatus.value = 'disconnected'
+    storedCharacterId = ''
+    storedOnMessage = null
     if (ws.value) {
       ws.value.close()
       ws.value = null
@@ -96,8 +199,8 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   return {
-    messages, loading, loadingOlder, hasMore, ws,
+    messages, loading, loadingOlder, hasMore, ws, connectionStatus, streamingContent,
     fetchHistory, loadOlderMessages, sendMessage,
-    connectWebSocket, sendViaWebSocket, disconnectWebSocket,
+    connectWebSocket, sendViaWebSocket, disconnectWebSocket, retryMessage,
   }
 })

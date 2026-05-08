@@ -102,6 +102,34 @@ async def export_memories(
     ]
 
 
+@router.post("/{character_id}/decay")
+async def trigger_decay(
+    character_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Manually trigger memory importance decay."""
+    await _verify_character_access(character_id, current_user, session)
+    from mnemosyne.memory.retriever import MemoryRetriever
+    retriever = MemoryRetriever()
+    await retriever.apply_decay(character_id)
+    return {"ok": True, "message": "Decay applied"}
+
+
+@router.get("/{character_id}/graph")
+async def get_memory_graph(
+    character_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get memory graph data for visualization."""
+    await _verify_character_access(character_id, current_user, session)
+    from mnemosyne.memory.retriever import MemoryRetriever
+    retriever = MemoryRetriever()
+    graph_data = await retriever.get_graph_data(character_id)
+    return graph_data
+
+
 async def _verify_character_access(character_id: str, user: User, session: AsyncSession):
     result = await session.execute(
         select(Character).where(Character.id == character_id, Character.user_id == user.id)

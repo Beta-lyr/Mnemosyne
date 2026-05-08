@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useMemoryStore } from '../stores/memories'
 import { useCharacterStore } from '../stores/characters'
 import type { Character } from '../stores/characters'
+import MemoryGraph from '../components/MemoryGraph.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -13,6 +14,7 @@ const charStore = useCharacterStore()
 const character = ref<Character | null>(null)
 const activeFilter = ref<string>('')
 const showConfirmClear = ref(false)
+const showGraph = ref(false)
 const loading = ref(true)
 
 const filteredMemories = computed(() => {
@@ -142,6 +144,12 @@ const typeActiveColors: Record<string, string> = {
           Events ({{ typeCounts.event }})
         </button>
         <div class="ml-auto flex gap-2">
+          <button @click="showGraph = !showGraph" class="btn-outline text-sm py-2" :class="{ '!bg-accent !text-white !border-accent': showGraph }">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 14.25v2.25m3-4.5v4.5m3-6.75v6.75m3-9v9M6 20.25h12A2.25 2.25 0 0020.25 18V6A2.25 2.25 0 0018 3.75H6A2.25 2.25 0 003.75 6v12A2.25 2.25 0 006 20.25z" />
+            </svg>
+            Graph
+          </button>
           <button @click="handleExport" class="btn-outline text-sm py-2">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
@@ -155,6 +163,11 @@ const typeActiveColors: Record<string, string> = {
             Clear All
           </button>
         </div>
+      </div>
+
+      <!-- Memory Graph -->
+      <div v-if="showGraph" class="mb-6 animate-fade-in">
+        <MemoryGraph :character-id="route.params.id as string" />
       </div>
 
       <!-- Memory List -->

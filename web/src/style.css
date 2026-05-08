@@ -102,3 +102,26 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #94A3B8;
 }
+
+/* Mobile safe area */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .safe-area-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/* Stream cursor blink */
+@keyframes blink-cursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.animate-blink {
+  animation: blink-cursor 0.8s step-end infinite;
+}
+
+/* Mobile adjustments */
+@media (max-width: 640px) {
+  .chat-bubble {
+    max-width: 85%;
+  }
+}

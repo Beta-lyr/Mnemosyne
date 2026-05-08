@@ -1,8 +1,10 @@
 """Memory retrieval with semantic search + temporal filters."""
 
+import asyncio
+import math
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mnemosyne.config import settings
@@ -55,6 +57,10 @@ class MemoryRetriever:
             if r["id"] not in seen:
                 seen.add(r["id"])
                 unique.append(r)
+
+        # Trigger decay asynchronously (non-blocking)
+        asyncio.create_task(self.apply_decay(character_id))
+
         return unique
 
     async def _semantic_search(
@@ -143,3 +149,104 @@ class MemoryRetriever:
             else:
                 events.append({"id": str(m.id), "type": m.type, "content": m.content, "metadata": meta})
         return events
+
+    async def apply_decay(self, character_id: str):
+        """Apply importance decay based on time since last access.
+
+        Formula: new_importance = importance * (0.95 ^ days_since_access)
+        Memories with importance < 0.1 are candidates for cleanup.
+        """
+        try:
+            async with async_session() as session:
+                result = await session.execute(
+                    select(Memory).where(
+                        Memory.character_id == character_id,
+                        Memory.last_accessed.isnot(None),
+                    )
+                )
+                memories = result.scalars().all()
+                now = datetime.now(timezone.utc)
+
+                for m in memories:
+                    if m.last_accessed is None:
+                        continue
+                    days_since = (now - m.last_accessed.replace(tzinfo=timezone.utc)).days
+                    if days_since < 1:
+                        continue
+                    decay_factor = math.pow(0.95, days_since)
+                    new_importance = m.importance * decay_factor
+                    if new_importance < 0.01:
+                        new_importance = 0.01  # Don't go to absolute zero
+                    if abs(new_importance - m.importance) > 0.01:
+                        await session.execute(
+                            update(Memory)
+                            .where(Memory.id == m.id)
+                            .values(importance=round(new_importance, 4))
+                        )
+
+                await session.commit()
+        except Exception:
+            pass  # Non-critical, don't break conversation flow
+
+    async def get_graph_data(self, character_id: str, max_nodes: int = 50) -> dict:
+        """Get memory graph data for visualization.
+
+        Returns {nodes: [...], edges: [...]}.
+        """
+        async with async_session() as session:
+            # Get top memories by importance
+            result = await session.execute(
+                select(Memory)
+                .where(Memory.character_id == character_id)
+                .where(Memory.embedding.isnot(None))
+                .order_by(Memory.importance.desc())
+                .limit(max_nodes)
+            )
+            memories = result.scalars().all()
+
+            nodes = []
+            for m in memories:
+                nodes.append({
+                    "id": str(m.id),
+                    "type": m.type,
+                    "content": m.content[:100],
+                    "importance": m.importance,
+                    "created_at": m.created_at.isoformat() if m.created_at else None,
+                })
+
+            # Calculate edges via cosine similarity
+            edges = []
+            if len(memories) >= 2:
+                import numpy as np
+                embeddings = []
+                valid_nodes = []
+                for m in memories:
+                    if m.embedding is not None:
+                        try:
+                            vec = list(m.embedding) if hasattr(m.embedding, '__iter__') else []
+                            if vec:
+                                embeddings.append(vec)
+                                valid_nodes.append(m)
+                        except Exception:
+                            continue
+
+                if len(embeddings) >= 2:
+                    embs = np.array(embeddings)
+                    # Normalize
+                    norms = np.linalg.norm(embs, axis=1, keepdims=True)
+                    norms = np.where(norms == 0, 1, norms)
+                    normalized = embs / norms
+                    # Cosine similarity matrix
+                    sim_matrix = normalized @ normalized.T
+
+                    for i in range(len(valid_nodes)):
+                        for j in range(i + 1, len(valid_nodes)):
+                            sim = float(sim_matrix[i, j])
+                            if sim > 0.5:
+                                edges.append({
+                                    "source": str(valid_nodes[i].id),
+                                    "target": str(valid_nodes[j].id),
+                                    "similarity": round(sim, 3),
+                                })
+
+            return {"nodes": nodes, "edges": edges}

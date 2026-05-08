@@ -10,6 +10,7 @@ const router = createRouter({
     { path: '/characters/:id', component: () => import('./views/CharacterDetail.vue'), meta: { requiresAuth: true } },
     { path: '/chat/:id', component: () => import('./views/Chat.vue'), meta: { requiresAuth: true } },
     { path: '/memories/:id', component: () => import('./views/Memories.vue'), meta: { requiresAuth: true } },
+    { path: '/analytics/:id', component: () => import('./views/Analytics.vue'), meta: { requiresAuth: true } },
     { path: '/settings', component: () => import('./views/Settings.vue'), meta: { requiresAuth: true } },
   ],
 })

@@ -40,6 +40,8 @@ dependencies = [
     # Image generation API
     "replicate>=0.30.0",
     "fal-client>=0.4.0",
+    # TTS (free, no API key needed)
+    "edge-tts>=6.1.0",
     # Utilities
     "pydantic>=2.7.0",
     "pydantic-settings>=2.3.0",
