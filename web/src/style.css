@@ -1,0 +1,127 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-surface-secondary text-gray-800 font-sans antialiased;
+  }
+
+  h1, h2, h3 {
+    @apply font-display;
+  }
+
+  /* Smooth scrolling */
+  html {
+    scroll-behavior: smooth;
+  }
+
+  /* Focus states for accessibility */
+  *:focus-visible {
+    @apply outline-2 outline-offset-2 outline-accent rounded;
+  }
+}
+
+@layer components {
+  /* Card component */
+  .card {
+    @apply bg-white rounded-2xl shadow-card transition-shadow duration-200 hover:shadow-card-hover;
+  }
+
+  /* Button base */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm
+           transition-all duration-200 cursor-pointer select-none
+           active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100;
+  }
+
+  .btn-primary {
+    @apply btn bg-primary text-white hover:bg-primary-600 shadow-sm;
+  }
+
+  .btn-accent {
+    @apply btn bg-accent text-white hover:bg-accent-600 shadow-sm;
+  }
+
+  .btn-secondary {
+    @apply btn bg-gray-100 text-gray-700 hover:bg-gray-200;
+  }
+
+  .btn-outline {
+    @apply btn border-2 border-gray-200 text-gray-600 hover:border-primary-200 hover:text-primary hover:bg-primary-50;
+  }
+
+  .btn-ghost {
+    @apply btn text-gray-600 hover:bg-gray-100;
+  }
+
+  .btn-danger {
+    @apply btn bg-red-500 text-white hover:bg-red-600;
+  }
+
+  /* Input base */
+  .input {
+    @apply w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm
+           focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent
+           transition-all duration-200 placeholder:text-gray-400;
+  }
+
+  /* Badge */
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold;
+  }
+
+  .badge-primary {
+    @apply badge bg-primary-100 text-primary-700;
+  }
+
+  .badge-accent {
+    @apply badge bg-accent-100 text-accent-700;
+  }
+
+  /* Skeleton loading */
+  .skeleton {
+    @apply animate-pulse bg-gray-200 rounded;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+/* Mobile safe area */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .safe-area-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/* Stream cursor blink */
+@keyframes blink-cursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.animate-blink {
+  animation: blink-cursor 0.8s step-end infinite;
+}
+
+/* Mobile adjustments */
+@media (max-width: 640px) {
+  .chat-bubble {
+    max-width: 85%;
+  }
+}
